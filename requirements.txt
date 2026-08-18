@@ -1,0 +1,23 @@
+# ── Core forensic analysis dependencies ──────────────────────────────
+# Required by ai_image_analyzer.py
+Pillow>=10.0.0
+numpy>=1.24.0
+opencv-python-headless>=4.8.0
+scipy>=1.11.0
+
+# ── Web UI dependencies ────────────────────────────────────────────────
+# Required by app.py (Streamlit)
+streamlit>=1.30.0
+
+# ── REST API dependencies ──────────────────────────────────────────────
+# Required by api.py (FastAPI)
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+python-multipart>=0.0.9
+# pydantic>=2.9.0  (installed automatically with fastapi)
+
+# ── Optional: enhanced metadata parsing ────────────────────────────────
+# The C2PA & EXIF test falls back to raw byte parsing when these are absent.
+# Install for richer EXIF / C2PA manifest extraction:
+# exifread>=3.0.0
+# pyc2pa>=0.7.0    (C2PA Content Credentials toolkit)
