@@ -428,7 +428,8 @@ st.markdown(
 
     /* Hide the default file uploader label text */
     .stFileUploader .css-1uibutton { display: none; }
-    """
+    """,
+    unsafe_allow_html=True,
 )
 
 # ── JavaScript: inject particle network & data streams ──────────────────────
