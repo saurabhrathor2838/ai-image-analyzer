@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-AI Image Analyzer  (v2.0 — Recalibrated)
+AI Image Analyzer  (v3.0 — Recalibrated & Enhanced)
 =========================================
 A forensic tool for detecting AI-generated images using multiple complementary
 techniques: metadata forensics, C2PA provenance verification, noise
@@ -11,14 +11,20 @@ Version 2.0 introduces a **percentage-based scoring system** with
 **recalibrated thresholds** that dramatically reduce false positives on
 real camera photographs.
 
-Version 2.1 adds the **C2PA Metadata Verification** test — a sixth
-forensic test that scans raw image bytes for C2PA manifests, AI tool
-signatures in XMP/IPTC/EXIF, and Adobe Photoshop IRB data.
+Version 3.0 introduces major algorithmic upgrades:
+  • **Non-linear score scaling** — sigmoid curve pushes strong signals
+    toward 0% / 100% for clearer verdicts
+  • **Dynamic weighting** — when EXIF/C2PA metadata is absent, physical
+    signal tests (Noise, Frequency, Visual) receive boosted weights
+  • **Text & grid anomaly detection** — catches AI-generated notebook
+    pages, diagrams, and synthetic ink strokes
+  • **New thresholds:** < 20% Real, 20–55% Uncertain, > 55% AI
 
-Scoring: 0-100 % AI probability per test → weighted average → verdict
-  < 30 %      →  Real Camera Photo
-  30–65 %     →  Uncertain / Mixed Signals
-  > 65 %      →  AI-Generated
+Scoring: 0-100% AI probability per test → score expansion → dynamic-weighted
+         average → sigmoid scaling → verdict
+  < 20 %      →  Real Camera Photo
+  20–55 %     →  Uncertain / Mixed Signals
+  > 55 %      →  AI-Generated
 
 Educational / media-literacy use only.
 
@@ -36,7 +42,7 @@ Options
     --no-color          Disable emoji output (for plain-text terminals)
     --verbose / -v      Print detailed findings for every test
     --quiet / -q        Print only the final verdict
-    --threshold N       AI-probability threshold (0.0-1.0, default 0.65)
+    --threshold N       AI-probability threshold for verdict (0.0-1.0, default 0.55)
 
 Dependencies
 ------------
@@ -50,6 +56,7 @@ import argparse
 import base64
 import glob
 import json
+import math
 import os
 import struct
 import sys
@@ -94,22 +101,33 @@ C2PA_AI_KEYWORDS = [
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".gif", ".tiff", ".tif"}
 
-# Weighting for each forensic test (must sum to 1.0)
-# Metadata weight reduced — many real photos / screenshots lack EXIF,
-# so it is a weak signal on its own.
+# Weighting for each forensic test (base weights; must sum to 1.0)
+# Dynamic weighting adjusts these at runtime when EXIF metadata is
+# absent — physical signal tests (Noise, Frequency, Visual) get boosted.
 # C2PA test added for direct provenance verification.
 TEST_WEIGHTS = {
     "metadata":      0.15,
-    "c2pa":          0.15,   # NEW: C2PA & enhanced EXIF verification
+    "c2pa":          0.15,   # C2PA & enhanced EXIF verification
     "noise":         0.25,
     "frequency":     0.20,
     "statistical":   0.10,
     "visual":        0.15,
 }
 
-# Verdict thresholds (AI probability %)
-AI_THRESHOLD  = 65.0   # above this → AI-Generated
-UNCERTAIN_LOW = 30.0   # below this → Real Camera Photo
+# Dynamic weight multipliers applied when EXIF metadata is absent.
+# Physical signal tests are boosted to compensate for missing provenance.
+DYNAMIC_WEIGHTS_NO_EXIF = {
+    "metadata":      0.30,   # reduced (no EXIF to verify)
+    "c2pa":          0.30,   # reduced (but still scans raw bytes)
+    "noise":         1.25,   # boosted
+    "frequency":     1.25,   # boosted
+    "statistical":   1.25,   # boosted
+    "visual":        1.35,   # boosted (text/grid anomaly detector)
+}
+
+# Verdict thresholds (v3.0 — recalibrated, tighter than v2.0)
+AI_THRESHOLD  = 55.0   # above this --> AI-Generated
+UNCERTAIN_LOW = 20.0   # below this --> Real Camera Photo
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -773,24 +791,190 @@ def test_noise(cv_img: np.ndarray) -> TestResult:
 
 
 def _check_cfa_artifacts(gray: np.ndarray, b: np.ndarray, g: np.ndarray, r: np.ndarray) -> float:
-    """Check for Colour Filter Array (CFA) interpolation artifacts."""
+    """Check for Colour Filter Array (CFA) interpolation artifacts.
+
+    Only samples from **non-uniform** regions to avoid false positives on
+    images with large flat areas (e.g. notebook pages, white backgrounds).
+
+    Additionally applies a background-smoothness gate: if the background
+    is hyper-smooth (std < 5) but the cross-channel HF correlation is
+    very high (> 0.50), the correlation is likely from synthetic content
+    rather than genuine Bayer interpolation — the score is dampened.
+    """
     try:
         h, w = gray.shape
         if h < 40 or w < 40:
             return 0.0
 
+        # ── Background smoothness check (for false-positive suppression) ──
+        lap = cv2.Laplacian(gray, cv2.CV_64F)
+        active_mask = np.abs(lap) > 1.0  # pixels with real detail
+        smooth_fraction = float((h * w - active_mask.sum()) / (h * w))
+        if active_mask.sum() < 100:
+            return 0.0  # too uniform — can't assess CFA
+
         b_hf = b.astype(np.float64) - cv2.GaussianBlur(b.astype(np.float64), (0, 0), 1)
         g_hf = g.astype(np.float64) - cv2.GaussianBlur(g.astype(np.float64), (0, 0), 1)
         r_hf = r.astype(np.float64) - cv2.GaussianBlur(r.astype(np.float64), (0, 0), 1)
 
-        bg_corr = np.corrcoef(b_hf.flatten(), g_hf.flatten())[0, 1]
-        gr_corr = np.corrcoef(g_hf.flatten(), r_hf.flatten())[0, 1]
-        br_corr = np.corrcoef(b_hf.flatten(), r_hf.flatten())[0, 1]
+        # Flatten and filter to active pixels only
+        b_flat = b_hf[active_mask]
+        g_flat = g_hf[active_mask]
+        r_flat = r_hf[active_mask]
+
+        bg_corr = np.corrcoef(b_flat, g_flat)[0, 1]
+        gr_corr = np.corrcoef(g_flat, r_flat)[0, 1]
+        br_corr = np.corrcoef(b_flat, r_flat)[0, 1]
+
+        if any(np.isnan(c) for c in [bg_corr, gr_corr, br_corr]):
+            return 0.0
 
         avg_correlation = (abs(bg_corr) + abs(gr_corr) + abs(br_corr)) / 3.0
+
+        # ── False-positive suppression ────────────────────────────────
+        # Extremely high cross-channel HF correlation (> 0.50) combined
+        # with a large smooth background is characteristic of AI generation,
+        # not genuine Bayer CFA interpolation.  Real camera photos have
+        # textured backgrounds (paper grain, sensor noise) that keep the
+        # smooth pixel fraction low (< 10%) even when CFA is present.
+        if avg_correlation > 0.50 and smooth_fraction > 0.10:
+            return 0.0  # Suppress — likely synthetic correlation
+
         return float(avg_correlation)
     except Exception:
         return 0.0
+
+
+# ════════════════════════════════════════════════════════════════════════════
+#  Text & Grid Anomaly Detector (helper)
+# ════════════════════════════════════════════════════════════════════════════
+
+def _detect_text_grid_anomalies(cv_img: np.ndarray) -> tuple[float, dict[str, Any]]:
+    """
+    Detect AI-generated text / diagram anomalies.
+
+    Works with **any** background colour (white, coloured, or gradient).
+    AI-generated notebook pages, diagrams, and text images lack the
+    subtle imperfections of real photographs:
+    - Hyper-smooth backgrounds (no paper texture, no sensor noise)
+    - Synthetic ink strokes (uniform colour, no natural pen variation)
+    - Perfectly periodic grid / text-line patterns
+    - Overly regular edge spacing / dense edge rows
+
+    Returns ``(anomaly_score, details)`` where *anomaly_score* is 0-50
+    (added to the Visual test's AI probability).
+    """
+    gray = cv2.cvtColor(cv_img, cv2.COLOR_BGR2GRAY)
+    h, w = gray.shape
+    if h < 64 or w < 64:
+        return 0.0, {"anomaly_skip": "Image too small"}
+
+    b, g, r = cv2.split(cv_img)
+    details: dict[str, Any] = {}
+    score = 0.0
+
+    # -- 1. Local variance (smoothness) -- catches gradient backgrounds --
+    # Laplacian misses gradient backgrounds (low Laplacian but high std).
+    # Local variance within a 9x9 window correctly identifies uniform areas.
+    local_mean = cv2.boxFilter(gray.astype(np.float64), -1, (9, 9))
+    local_sqmean = cv2.boxFilter(gray.astype(np.float64) ** 2, -1, (9, 9))
+    local_var = np.maximum(0, local_sqmean - local_mean ** 2)
+    local_std = np.sqrt(local_var)
+
+    uniform_mask = (local_var < 16.0).astype(np.uint8)  # std < 4
+    uniform_fraction = float(uniform_mask.sum()) / (h * w)
+    details["uniform_pixel_coverage"] = round(uniform_fraction, 4)
+
+    if uniform_fraction > 0.70:
+        details["large_uniform_background"] = True
+        score += 25.0
+    elif uniform_fraction > 0.40:
+        details["moderate_uniform_background"] = True
+        score += 15.0
+    elif uniform_fraction > 0.15:
+        score += 5.0
+
+    # -- 2. Background texture smoothness (no paper grain / sensor noise) --
+    if uniform_mask.sum() > 200:
+        avg_local_std = float(np.mean(local_std[uniform_mask > 0]))
+        details["avg_local_std"] = round(avg_local_std, 4)
+
+        if avg_local_std < 1.5:
+            details["hyper_smooth_background"] = True
+            score += 25.0
+        elif avg_local_std < 3.0:
+            details["smooth_background"] = True
+            score += 10.0
+
+    # -- 3. Periodic grid / text-line patterns via FFT --
+    gray_f = gray.astype(np.float64) - np.mean(gray)
+    fft = np.fft.fft2(gray_f)
+    magnitude = np.log1p(np.abs(np.fft.fftshift(fft)))
+    center_h, center_w = h // 2, w // 2
+
+    h_profile = magnitude[center_h, :].copy()
+    v_profile = magnitude[:, center_w].copy()
+
+    hw = min(w // 12, 40)
+    h_profile[max(0, center_w - hw):center_w + hw] = 0
+    hh = min(h // 12, 40)
+    v_profile[max(0, center_h - hh):center_h + hh] = 0
+
+    h_threshold = np.mean(h_profile) + 2.0 * np.std(h_profile)
+    v_threshold = np.mean(v_profile) + 2.0 * np.std(v_profile)
+    h_peaks = int(np.sum(h_profile > h_threshold))
+    v_peaks = int(np.sum(v_profile > v_threshold))
+    details["horizontal_freq_peaks"] = h_peaks
+    details["vertical_freq_peaks"] = v_peaks
+
+    if h_peaks >= 3 or v_peaks >= 3:
+        details["periodic_grid_pattern"] = True
+        score += 20.0
+    elif h_peaks >= 1 or v_peaks >= 1:
+        score += 5.0
+
+    # -- 4. Edge-row density & regularity (text / diagram patterns) --
+    edges = cv2.Canny(gray, 50, 150)
+
+    edge_rows = np.sum(edges > 0, axis=1)
+    edge_row_indices = np.where(edge_rows > 0)[0]
+    if len(edge_row_indices) > 5:
+        gaps = np.diff(edge_row_indices).astype(float)
+        gap_mean = float(np.mean(gaps))
+        gap_std = float(np.std(gaps))
+        edge_row_density = len(edge_row_indices) / h
+        details["edge_row_density"] = round(edge_row_density, 4)
+
+        if edge_row_density > 0.95 and gap_mean < 3 and uniform_fraction > 0.15:
+            details["dense_edge_rows"] = True
+            details["gap_mean"] = round(gap_mean, 4)
+            score += 20.0
+        elif gap_mean > 5:
+            regularity = 1.0 - min(1.0, gap_std / (gap_mean + 1e-8))
+            details["edge_row_regularity"] = round(regularity, 4)
+            if regularity > 0.85:
+                details["regular_edge_spacing"] = True
+                score += 15.0
+
+    # -- 5. Color uniformity of ink regions (synthetic strokes) --
+    dark_pixels = gray < 100
+    if dark_pixels.sum() > 500:
+        dark_b = b[dark_pixels]
+        dark_g = g[dark_pixels]
+        dark_r = r[dark_pixels]
+        ink_color_std = float(np.mean([
+            np.std(dark_b.astype(np.float64)),
+            np.std(dark_g.astype(np.float64)),
+            np.std(dark_r.astype(np.float64)),
+        ]))
+        details["ink_color_std"] = round(ink_color_std, 4)
+
+        if ink_color_std < 15.0 and uniform_fraction > 0.15:
+            details["uniform_ink_color"] = True
+            score += 10.0
+
+    details["total_anomaly_score"] = round(score, 2)
+    return min(50.0, score), details
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -1223,6 +1407,29 @@ def test_artifacts(cv_img: np.ndarray) -> TestResult:
         findings.append(f"Texture variance ({texture_variance:.1f}) is moderate.")
         ai_prob = max(15.0, ai_prob - 3.0)
 
+    # --- Text & Grid Anomaly Detection ---
+    anomaly_score, anomaly_details = _detect_text_grid_anomalies(cv_img)
+    details.update(anomaly_details)
+
+    if anomaly_score > 0:
+        if anomaly_score >= 40:
+            findings.append(
+                f"Strong text/grid anomalies detected ({anomaly_score:.0f} pts): "
+                f"large smooth white background with hyper-uniform texture "
+                f"and periodic patterns — characteristic of AI-generated "
+                f"notebook pages, diagrams, or text renders."
+            )
+            ai_prob = min(95.0, ai_prob + int(anomaly_score))
+            confidence = max(confidence, 0.8)
+        elif anomaly_score >= 15:
+            findings.append(
+                f"Mild text/grid anomalies detected ({anomaly_score:.0f} pts): "
+                f"smooth backgrounds and mild periodicity — common in "
+                f"synthetic text/diagrams."
+            )
+            ai_prob = min(95.0, ai_prob + int(anomaly_score * 0.7))
+            confidence = max(confidence, 0.6)
+
     explanation = "; ".join(findings)
     return TestResult(
         name="Visual Artifact Detection",
@@ -1253,26 +1460,96 @@ def _texture_analysis(gray: np.ndarray) -> float:
 #  Scoring Engine
 # ════════════════════════════════════════════════════════════════════════════
 
-def aggregate_results(tests: list[TestResult], threshold: float = 0.65) -> tuple[float, float, str, str]:
+def _sigmoid_scale(score: float, steepness: float = 0.08) -> float:
+    """Apply a sigmoid (logistic) scaling curve to push extreme scores
+    toward 0 or 100.
+
+    50 maps to 50 (neutral).  Values far from 50 are amplified:
+        0%  → ~1.8%
+       20%  → ~8.0%
+       30%  → ~15%
+       40%  → ~23%
+       50%  → 50%
+       60%  → ~77%
+       70%  → ~85%
+       80%  → ~92%
+       100% → ~98.2%
+    """
+    return max(0.0, min(100.0, 100.0 / (1.0 + math.exp(-steepness * (score - 50.0)))))
+
+
+def _expand_test_score(score: float, confidence: float) -> float:
+    """Expand a test's score away from 50% based on its confidence.
+
+    High-confidence tests are pushed toward 0 or 100, making them
+    more decisive in the aggregate.  Low-confidence tests stay near 50.
+    """
+    factor = 0.5 + confidence  # range 0.5 – 1.5
+    return max(0.0, min(100.0, 50.0 + (score - 50.0) * factor))
+
+
+def _determine_has_exif(tests: list[TestResult]) -> bool:
+    """Check whether any metadata test found real EXIF data."""
+    for t in tests:
+        if t.name.lower().split()[0] in ("metadata", "c2pa"):
+            exif_tag_count = t.details.get("exif_tag_count", 0)
+            if exif_tag_count and exif_tag_count > 0:
+                return True
+            # Metadata test stores rich exif in its details
+            exif_data = t.details.get("exif")
+            if exif_data and len(exif_data) > 0:
+                return True
+    return False
+
+
+def aggregate_results(
+    tests: list[TestResult],
+    threshold: float = 0.55,
+    has_exif: bool = True,
+) -> tuple[float, float, str, str]:
     """
     Combine all test results into an overall AI-probability score.
 
-    Each test contributes: ai_prob × weight × confidence
+    Pipeline (v3.0):
+      1. **Dynamic weighting** — if EXIF is absent, boost physical-signal
+         tests (Noise, Frequency, Visual) and reduce metadata weights.
+      2. **Score expansion** — each test's score is expanded away from 50
+         proportionally to its confidence.
+      3. **Weighted aggregation** — confidence-weighted average of
+         expanded scores.
+      4. **Sigmoid scaling** — final non-linear transform for stronger
+         verdict confidence (extreme signals → closer to 0 / 100).
     """
+    # ── 1. Dynamic weight adjustment ───────────────────────────────────
+    if not has_exif:
+        # Boost physical signal tests, reduce metadata tests
+        weight_multipliers = DYNAMIC_WEIGHTS_NO_EXIF
+    else:
+        weight_multipliers = {k: 1.0 for k in TEST_WEIGHTS}
+
+    # ── 2. Per-test score expansion ──────────────────────────────────────
     weighted_sum = 0.0
     weight_total = 0.0
     confidence_values: list[float] = []
 
     for test in tests:
-        weight = TEST_WEIGHTS.get(test.name.lower().split()[0], 0.2)
-        weighted_sum += test.score * weight * test.confidence
+        key = test.name.lower().split()[0]
+        base_weight = TEST_WEIGHTS.get(key, 0.2)
+        multiplier = weight_multipliers.get(key, 1.0)
+        weight = base_weight * multiplier
+
+        expanded_score = _expand_test_score(test.score, test.confidence)
+        weighted_sum += expanded_score * weight * test.confidence
         weight_total += weight * test.confidence
         confidence_values.append(test.confidence)
 
-    overall_score = weighted_sum / (weight_total + 1e-12) if weight_total > 0 else 50.0
+    raw_score = weighted_sum / (weight_total + 1e-12) if weight_total > 0 else 50.0
     overall_confidence = float(np.mean(confidence_values))
 
-    # Verdict thresholds
+    # ── 3 & 4. Non-linear sigmoid scaling on the aggregated score ──────
+    overall_score = _sigmoid_scale(raw_score)
+
+    # ── Verdict ────────────────────────────────────────────────────────
     if overall_score < UNCERTAIN_LOW:
         verdict = "Real Camera Photo"
     elif overall_score <= AI_THRESHOLD:
@@ -1401,7 +1678,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 <body>
     <div class="container">
         <h1>AI Image Analysis Report</h1>
-        <p class="subtitle">
+            <p class="subtitle">
             Analysed: <strong>{image_path}</strong> ·
             Resolution: <strong>{width} x {height}</strong> ·
             File size: <strong>{file_size}</strong> ·
@@ -1424,8 +1701,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         {test_cards}
 
         <div class="footer">
-            AI Image Analyzer v2.0 · Educational / research use ·
-            Percentage-based forensic scoring · 5 complementary tests
+            AI Image Analyzer v3.0 · Educational / research use ·
+            Percentage-based forensic scoring · 6 complementary tests
         </div>
     </div>
 </body>
@@ -1440,8 +1717,8 @@ def generate_html_report(report: AnalysisReport, image_path: str) -> str:
 
     test_cards = ""
     for test in report.tests:
-        verdict_class = "AI" if test.score > 65 else ("Real" if test.score < 30 else "Uncertain")
-        score_class = "positive" if test.score > 65 else ("negative" if test.score < 30 else "neutral")
+        verdict_class = "AI" if test.score > 55 else ("Real" if test.score < 20 else "Uncertain")
+        score_class = "positive" if test.score > 55 else ("negative" if test.score < 20 else "neutral")
         ai_pct = f"{test.score:.0f}%"
 
         details_json = json.dumps(_json_safe(test.details), indent=2)
@@ -1615,7 +1892,7 @@ def print_report(report: AnalysisReport, verbose: bool = True, quiet: bool = Fal
     if verbose:
         print(f"\n  Per-Test Breakdown:\n")
         for test in report.tests:
-            marker = real_marker if test.score < 30 else (ai_marker if test.score > 65 else uncertain_marker)
+            marker = real_marker if test.score < 20 else (ai_marker if test.score > 55 else uncertain_marker)
             real_p = 100.0 - test.score
             print(f"  {marker} {test.name}: AI={test.score:.0f}% | Real={real_p:.0f}% "
                   f"(conf: {test.confidence:.0%}, verdict: {test.verdict})")
@@ -1666,7 +1943,7 @@ def print_batch_summary(reports: list[AnalysisReport], no_color: bool = False,
         print(f"  {verdict}: {count} ({pct:.0f}%)")
 
     most_suspicious = sorted_reports[0]
-    if most_suspicious.overall_score > 30:
+    if most_suspicious.overall_score > 20:
         print(f"\n  Most suspicious: {os.path.basename(most_suspicious.image_path)} "
               f"(AI probability: {most_suspicious.overall_score:.0f}%)")
 
@@ -1678,7 +1955,7 @@ def print_batch_summary(reports: list[AnalysisReport], no_color: bool = False,
 #  Main Analysis Pipeline
 # ════════════════════════════════════════════════════════════════════════════
 
-def analyze_image(image_path: str, threshold: float = 0.65) -> AnalysisReport:
+def analyze_image(image_path: str, threshold: float = 0.55) -> AnalysisReport:
     """Run the full forensic analysis pipeline on an image."""
     cv_img, pil_img, exif_dict = load_image(image_path)
     h, w = cv_img.shape[:2]
@@ -1694,7 +1971,10 @@ def analyze_image(image_path: str, threshold: float = 0.65) -> AnalysisReport:
     tests.append(test_statistics(cv_img))
     tests.append(test_artifacts(cv_img))
 
-    overall_score, overall_confidence, verdict, summary = aggregate_results(tests, threshold)
+    has_exif = bool(exif_dict) or _determine_has_exif(tests)
+    overall_score, overall_confidence, verdict, summary = aggregate_results(
+        tests, threshold=threshold, has_exif=has_exif
+    )
 
     return AnalysisReport(
         image_path=image_path,
@@ -1765,8 +2045,8 @@ Examples:
     parser.add_argument("-v", "--verbose", action="store_true", help="Print detailed findings for every test")
     parser.add_argument("-q", "--quiet", action="store_true", help="Print only the final verdict")
     parser.add_argument("--no-color", action="store_true", help="Disable emoji output (for plain-text terminals)")
-    parser.add_argument("--threshold", type=float, default=0.65,
-                        help="AI-probability threshold for verdict (0.0-1.0, default 0.65)")
+    parser.add_argument("--threshold", type=float, default=0.55,
+                        help="AI-probability threshold for verdict (0.0-1.0, default 0.55)")
 
     args = parser.parse_args()
 

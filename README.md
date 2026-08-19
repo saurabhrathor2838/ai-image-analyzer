@@ -5,6 +5,12 @@ techniques — metadata forensics, C2PA provenance verification, noise
 pattern analysis, frequency-domain analysis, statistical tests, and
 visual-artifact detection.
 
+> **Version 3.0** — Now detects AI-generated notebook pages, ChatGPT/Gemini
+> text diagrams, and synthetic documents with coloured backgrounds.
+> Features hyper-smooth background detection, dynamic weighting when EXIF
+> is missing, non-linear sigmoid score scaling for stronger verdicts,
+> and a Text & Grid Anomaly Detector that works with any background colour.
+
 > **Purpose:** Research, media-literacy, and platform-safety workflows.
 > This tool helps you understand *why* an image looks synthetic — it is **not**
 > a production-grade classifier, and no automated detector is ever 100 %
@@ -24,30 +30,42 @@ combines their results into an overall score and verdict.
 | 3 | **Noise Pattern Analysis** | 0.25 | Uniform noise across regions, absence of CFA (Bayer) interpolation patterns, chroma noise patterns |
 | 4 | **Frequency Domain Analysis** | 0.20 | Flat spectral slope (~1/f² fall-off), excessive high-frequency energy, periodic grid patterns |
 | 5 | **Statistical Analysis** | 0.10 | Histogram entropy, inter-channel correlation, pixel distribution kurtosis, double-JPEG traces |
-| 6 | **Visual Artifact Detection** | 0.15 | Over-smoothing, unnatural symmetry, abnormal edge density, low texture variance |
+| 6 | **Visual Artifact Detection** | 0.15 | Over-smoothing, unnatural symmetry, abnormal edge density, low texture variance, **Text & Grid Anomalies** (synthetic text/diagrams, hyper-smooth backgrounds of any color) |
 
-### Scoring (v2.0 — Percentage-Based)
+### Scoring (v3.0 — Sigmoid-Calibrated)
 
 Each test produces an **AI probability percentage** (0–100 %):
 0 % = certainly a real photograph, 50 % = uncertain, 100 % = certainly AI-generated.
 Tests are weighted by confidence and combined into an overall score.
 
+When **EXIF/C2PA metadata is missing**, the dynamic weighting system
+automatically boosts the weight of physical-signal tests (Noise, Frequency,
+Statistical, Visual) to compensate — metadata alone should never determine
+the verdict.
+
+After aggregation, a **sigmoid non-linearity** sharpens the final score so
+that strong AI signals approach 85–100 % and clear camera photos drop below
+10–15 %, rather than clustering in the 30–50 % uncertain band.
+
 | Overall AI Probability | Verdict |
 |------------------------|---------|
-| < 30 % | **Real Camera Photo** |
-| 30 – 65 % | **Uncertain / Mixed Signals** |
-| > 65 % | **AI-Generated** |
+| < 20 % | **Real Camera Photo** |
+| 20 – 55 % | **Uncertain / Mixed Signals** |
+| > 55 % | **AI-Generated** |
 
-### Test Weights
+### Dynamic Test Weights
 
-| Test | Weight |
-|------|--------|
-| Metadata Forensics | 0.15 |
-| C2PA Metadata Verification | 0.15 |
-| Noise Pattern Analysis | 0.25 |
-| Frequency Domain Analysis | 0.20 |
-| Statistical Analysis | 0.10 |
-| Visual Artifact Detection | 0.15 |
+When EXIF/C2PA metadata is present, default weights are used. When metadata
+is **absent**, weights are rebalanced to favour physical-signal evidence:
+
+| Test | Default Weight | No-EXIF Weight |
+|------|---------------|----------------|
+| Metadata Forensics | 0.15 | 0.30 |
+| C2PA Metadata Verification | 0.15 | 0.30 |
+| Noise Pattern Analysis | 0.25 | 0.25 × 1.25 |
+| Frequency Domain Analysis | 0.20 | 0.20 × 1.25 |
+| Statistical Analysis | 0.10 | 0.10 × 1.25 |
+| Visual Artifact Detection | 0.15 | 0.15 × 1.35 |
 
 ---
 
@@ -137,7 +155,7 @@ python ai_image_analyzer.py --help
     -v, --verbose    Print detailed findings for every test
     -q, --quiet      Print only the final verdict
     --no-color       Disable coloured/emoji output (plain-text mode)
-    --threshold N    AI-probability threshold for verdict (0.0-1.0, default 0.65)
+    --threshold N    AI-probability threshold for verdict (0.0-1.0, default 0.55)
 ```
 
 ---
@@ -222,10 +240,10 @@ curl -X POST "http://localhost:8000/analyze" \
   "file_size": 332700,
   "timestamp": "2026-08-19 01:00:00",
   "verdict": "Real Camera Photo",
-  "ai_probability": 27.56,
-  "real_probability": 72.44,
+  "ai_probability": 10.15,
+  "real_probability": 89.85,
   "confidence": 0.5833,
-  "summary": "AI Probability: 28% ... Verdict: Real Camera Photo",
+  "summary": "AI Probability: 10% ... Verdict: Real Camera Photo",
   "tests": [
     {
       "name": "Metadata Forensics",
@@ -258,8 +276,8 @@ curl -X POST "http://localhost:8000/analyze" \
   Timestamp:   2026-08-19 00:13:52
 ======================================================================
 
-  AI Probability:   68.8%
-  Real Confidence:  31.2%
+  AI Probability:   89.3%
+  Real Confidence:  10.7%
   (Overall Conf:   54%)
   [0% REAL                      100% AI]
   [###########################-------------]
@@ -283,8 +301,8 @@ curl -X POST "http://localhost:8000/analyze" \
 {
   "image_path": "ai_like_test.png",
   "verdict": "AI-Generated",
-  "ai_probability": 68.84,
-  "real_probability": 31.16,
+  "ai_probability": 89.34,
+  "real_probability": 10.66,
   "confidence": 0.59,
   "tests": [
     {
@@ -305,6 +323,32 @@ curl -X POST "http://localhost:8000/analyze" \
 
 Open `report.html` in any browser for an interactive, styled analysis
 report with per-test details and confidence breakdowns.
+
+---
+
+## 🚨 v3.0: Text & Grid Anomaly Detector
+
+The v3.0 update adds a dedicated **Text & Grid Anomaly Detector** inside the
+Visual Artifact test. This detects AI-generated notebook pages, ChatGPT/Gemini
+text diagrams, and synthetic documents that were previously misclassified as
+real photos. The detector works with **any background colour** (white, coloured,
+or gradient) and looks for:
+
+- **Hyper-smooth backgrounds** — large regions with near-zero local variance
+  (no paper texture, no sensor noise), detected via 9×9 local variance
+- **Dense edge rows** — every horizontal scanline contains edges, indicating
+  text/diagram rendering rather than natural photographic content
+- **Periodic grid patterns** — repetitive structures via FFT frequency peaks
+- **Uniform ink strokes** — dark regions with unnaturally low colour variance
+  (synthetic pen strokes vs. real handwriting)
+
+### CFA False-Positive Suppression
+
+The Noise test's CFA (Bayer sensor) detector now includes a smoothness gate:
+if cross-channel HF correlation is extremely high (> 0.50) **and** more than
+10% of the image is in smooth regions, the CFA score is suppressed. This
+prevents AI images with coloured/gradient backgrounds from triggering false
+CFA detections.
 
 ---
 

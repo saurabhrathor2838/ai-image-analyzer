@@ -115,9 +115,9 @@ async def root() -> dict[str, Any]:
                     "-F 'file=@/path/to/image.jpg' | python -m json.tool",
         },
         "verdict_thresholds": {
-            "< 30%": "Real Camera Photo",
-            "30-65%": "Uncertain / Mixed Signals",
-            "> 65%": "AI-Generated",
+            "< 20%": "Real Camera Photo",
+            "20-55%": "Uncertain / Mixed Signals",
+            "> 55%": "AI-Generated",
         },
     }
 

@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.DS_Store
+*.log
+debug_*.py
+photo_report.html
+gemini_report.html
+final_report.html
