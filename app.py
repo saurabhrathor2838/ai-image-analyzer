@@ -433,16 +433,31 @@ st.markdown(
 )
 
 # ── JavaScript: inject particle network & data streams ──────────────────────
-# We use streamlit's component or a simple HTML injection via st.markdown
-PARTICLE_JS = """
-<div id="bg-particles"></div>
-<div id="bg-streams"></div>
+# Streamlit's st.markdown does NOT execute <script> tags (React's
+# dangerouslySetInnerHTML strips them).  We use streamlit.components.v1.html()
+# which renders a real iframe and properly runs JS.
+import streamlit.components.v1 as components  # noqa: E402
+
+_PARTICLE_JS = """
 <script>
 (function() {
-    var container = document.getElementById('bg-particles');
+    var doc = window.parent.document;
+    // Create container divs in the parent page so the CSS from st.markdown
+    // can style them (the .particle class is defined in the main CSS block).
+    var container = doc.createElement('div');
+    container.id = 'bg-particles';
+    container.style.position = 'fixed';
+    container.style.top = '0';
+    container.style.left = '0';
+    container.style.width = '100%';
+    container.style.height = '100%';
+    container.style.pointerEvents = 'none';
+    container.style.zIndex = '-1';
+    doc.body.appendChild(container);
+
     var ns = 80;
     for (var i = 0; i < ns; i++) {
-        var p = document.createElement('div');
+        var p = doc.createElement('div');
         p.className = 'particle';
         var size = Math.random() * 3 + 1;
         p.style.width = size + 'px';
@@ -457,14 +472,15 @@ PARTICLE_JS = """
         container.appendChild(p);
     }
 
-    // Draw connecting lines via canvas overlay
-    var canvas = document.createElement('canvas');
+    // Draw connecting lines via canvas overlay — must also be in parent
+    var canvas = doc.createElement('canvas');
+    canvas.id = 'bg-canvas';
     canvas.style.position = 'fixed';
-    canvas.style.top = 0;
-    canvas.style.left = 0;
+    canvas.style.top = '0';
+    canvas.style.left = '0';
     canvas.style.zIndex = '-1';
     canvas.style.pointerEvents = 'none';
-    document.body.appendChild(canvas);
+    doc.body.appendChild(canvas);
 
     var ctx = canvas.getContext('2d');
     function resize() {
@@ -516,7 +532,7 @@ PARTICLE_JS = """
 </script>
 """
 
-st.markdown(PARTICLE_JS, unsafe_allow_html=True)
+components.html(_PARTICLE_JS, height=0)
 
 # ── Sidebar ─────────────────────────────────────────────────────────────────
 with st.sidebar:
