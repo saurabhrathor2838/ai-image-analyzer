@@ -1,15 +1,11 @@
 #!/usr/bin/env python3
 """
-AI Image Analyzer  (v3.0 — Recalibrated & Enhanced)
+AI Image Analyzer  (v3.1 — Ensemble + Sigmoid)
 =========================================
 A forensic tool for detecting AI-generated images using multiple complementary
 techniques: metadata forensics, C2PA provenance verification, noise
 pattern analysis, frequency-domain analysis, statistical tests, and
 visual-artifact detection.
-
-Version 2.0 introduces a **percentage-based scoring system** with
-**recalibrated thresholds** that dramatically reduce false positives on
-real camera photographs.
 
 Version 3.0 introduces major algorithmic upgrades:
   • **Non-linear score scaling** — sigmoid curve pushes strong signals
@@ -19,6 +15,13 @@ Version 3.0 introduces major algorithmic upgrades:
   • **Text & grid anomaly detection** — catches AI-generated notebook
     pages, diagrams, and synthetic ink strokes
   • **New thresholds:** < 20% Real, 20–55% Uncertain, > 55% AI
+
+Version 3.1 adds deep learning and ELA to the ensemble:
+  • **Deep Learning Detector** — pre-trained Swin Transformer
+    (`umm-maybe/AI-image-detector` via HuggingFace) extracts deep features;
+    confidence-gated to avoid false positives on abstract/synthetic images
+  • **Error Level Analysis (ELA)** — JPEG recompression error patterns,
+    block-level uniformity, and compression artefact distribution
 
 Scoring: 0-100% AI probability per test → score expansion → dynamic-weighted
          average → sigmoid scaling → verdict
@@ -55,6 +58,7 @@ from __future__ import annotations
 import argparse
 import base64
 import glob
+import io
 import json
 import math
 import os
@@ -68,6 +72,20 @@ from typing import Any
 import cv2
 import numpy as np
 from PIL import Image, ExifTags
+
+# ── Optional deep-learning imports (Swin Transformer AI detector) ─────────
+_TORCH_AVAILABLE = True
+try:
+    import torch
+    from transformers import AutoModelForImageClassification, AutoImageProcessor
+    _DL_MODEL = None
+    _DL_PROCESSOR = None
+    _MODEL_NAME = "umm-maybe/AI-image-detector"
+except ImportError:
+    _TORCH_AVAILABLE = False
+    _DL_MODEL = None
+    _DL_PROCESSOR = None
+    _MODEL_NAME = "umm-maybe/AI-image-detector"
 
 # ── Suppress noisy warnings ──────────────────────────────────────────────
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -105,14 +123,18 @@ IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".gif", ".tiff", "
 # Dynamic weighting adjusts these at runtime when EXIF metadata is
 # absent — physical signal tests (Noise, Frequency, Visual) get boosted.
 # C2PA test added for direct provenance verification.
+# Deep Learning (Swin Transformer) and ELA added for robust ensemble.
 TEST_WEIGHTS = {
-    "metadata":      0.15,
-    "c2pa":          0.15,   # C2PA & enhanced EXIF verification
-    "noise":         0.25,
-    "frequency":     0.20,
-    "statistical":   0.10,
-    "visual":        0.15,
+    "metadata":      0.10,
+    "c2pa":          0.10,   # C2PA & enhanced EXIF verification
+    "noise":         0.20,   # noise pattern analysis
+    "frequency":     0.15,   # frequency domain analysis (2D FFT)
+    "statistical":   0.10,   # statistical anomaly detection
+    "visual":        0.15,   # visual artifact + text/grid anomaly
+    "deep":          0.15,   # deep learning (Swin Transformer)
+    "error":         0.05,   # error level analysis (ELA)
 }
+# Total = 0.10+0.10+0.20+0.15+0.10+0.15+0.15+0.05 = 1.00
 
 # Dynamic weight multipliers applied when EXIF metadata is absent.
 # Physical signal tests are boosted to compensate for missing provenance.
@@ -123,6 +145,8 @@ DYNAMIC_WEIGHTS_NO_EXIF = {
     "frequency":     1.25,   # boosted
     "statistical":   1.25,   # boosted
     "visual":        1.35,   # boosted (text/grid anomaly detector)
+    "deep":          1.00,   # neutral — DL model doesn't depend on EXIF
+    "error":         1.20,   # boosted — ELA is a strong physical signal
 }
 
 # Verdict thresholds (v3.0 — recalibrated, tighter than v2.0)
@@ -977,8 +1001,378 @@ def _detect_text_grid_anomalies(cv_img: np.ndarray) -> tuple[float, dict[str, An
     return min(50.0, score), details
 
 
+
 # ════════════════════════════════════════════════════════════════════════════
-#  Test 3 — Frequency Domain Analysis
+#  Test 2.5 — Deep Learning Detector (Swin Transformer)
+# ════════════════════════════════════════════════════════════════════════════
+
+_DL_MODEL_CACHE: dict[str, Any] = {}
+
+
+def _load_dl_model() -> Any:
+    """Lazily download and load the Swin Transformer AI detector model.
+
+    Uses ``umm-maybe/AI-image-detector`` from HuggingFace Hub — a
+    fine-tuned Swin Transformer that classifies images as
+    *artificial* (AI-generated) or *human* (real photograph).
+
+    The model is cached in-memory after the first load.
+    """
+    if not _TORCH_AVAILABLE:
+        return None
+
+    cache_key = _MODEL_NAME
+    if cache_key in _DL_MODEL_CACHE:
+        return _DL_MODEL_CACHE[cache_key]
+
+    try:
+        import torch
+        from transformers import AutoModelForImageClassification, AutoImageProcessor
+
+        processor = AutoImageProcessor.from_pretrained(_MODEL_NAME)
+        model = AutoModelForImageClassification.from_pretrained(_MODEL_NAME)
+        model.eval()
+        if torch.cuda.is_available():
+            model = model.to("cuda")
+
+        _DL_MODEL_CACHE[cache_key] = (model, processor)
+        return _DL_MODEL_CACHE[cache_key]
+    except Exception as exc:
+        warnings.warn(f"Deep learning model load failed: {exc}")
+        _DL_MODEL_CACHE[cache_key] = None
+        return None
+
+
+def test_deep_learning(cv_img: np.ndarray) -> TestResult:
+    """Run the pre-trained Swin Transformer AI detector on the image.
+
+    Uses ``umm-maybe/AI-image-detector`` which classifies images as
+    'artificial' (AI-generated) or 'human' (real photograph).
+
+    The model's 'artificial' probability is mapped to an AI
+    probability score.
+    """
+    result = _load_dl_model()
+    if result is None:
+        return TestResult(
+            name="Deep Learning Detector (Swin Transformer)",
+            score=50.0,
+            confidence=0.0,
+            explanation="Swin Transformer model unavailable (transformers/torch not installed).",
+            details={"model": _MODEL_NAME, "error": "model_not_available"},
+        )
+
+    model, processor = result
+
+    try:
+        import torch
+
+        # Convert OpenCV BGR to RGB PIL image
+        rgb = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
+        pil_img = Image.fromarray(rgb)
+
+        # Handle small images by resizing up
+        min_size = 32
+        if pil_img.size[0] < min_size or pil_img.size[1] < min_size:
+            pil_img = pil_img.resize((224, 224), Image.LANCZOS)
+
+        # Preprocess
+        inputs = processor(images=pil_img, return_tensors="pt")
+        if torch.cuda.is_available():
+            inputs = {k: v.to("cuda") for k, v in inputs.items()}
+
+        with torch.no_grad():
+            outputs = model(**inputs)
+            logits = outputs.logits
+
+        # Get probabilities via softmax
+        probs = torch.softmax(logits, dim=-1)
+        probs = probs.cpu().numpy()[0]
+
+        # --- Dynamically resolve the AI/Fake vs Real class indices from the
+        # model's config (config.id2label) instead of hardcoding positions ---
+        # Hardcoding "index 0 = artificial, index 1 = human" is fragile: if a
+        # future model revision (or a drop-in replacement) swaps the label
+        # order, every score would silently invert.  We therefore identify
+        # the AI and the Real class by *name* and only fall back to the
+        # positional convention for umm-maybe/AI-image-detector
+        # ({"0": "artificial", "1": "human"}) when labels are generic.
+        label_map = getattr(model.config, "id2label", None) or {}
+        label_names = {str(k): str(v).lower() for k, v in label_map.items()}
+
+        _AI_LABEL_KEYWORDS = (
+            "artificial", "ai", "fake", "synthetic", "generated",
+            "manmade", "gan", "deepfake", "diffusion",
+        )
+        _REAL_LABEL_KEYWORDS = (
+            "human", "real", "photo", "photograph", "authentic",
+            "natural", "genuine", "camera",
+        )
+
+        num_classes = int(logits.shape[-1])
+        ai_index = None
+        real_index = None
+        for i in range(num_classes):
+            name = label_names.get(str(i), "")
+            if ai_index is None and any(kw in name for kw in _AI_LABEL_KEYWORDS):
+                ai_index = i
+            if real_index is None and any(kw in name for kw in _REAL_LABEL_KEYWORDS):
+                real_index = i
+
+        # Positional fallbacks (preserve historical behaviour for the
+        # umm-maybe/AI-image-detector model which ships {"0": "artificial",
+        # "1": "human"}).
+        if ai_index is None:
+            ai_index = 0
+        if real_index is None or real_index == ai_index:
+            real_index = 1 if num_classes > 1 else ai_index
+
+        artificial_prob = float(probs[ai_index]) if 0 <= ai_index < len(probs) else 0.0
+        human_prob = (
+            float(probs[real_index])
+            if 0 <= real_index < len(probs) and real_index != ai_index
+            else 0.0
+        )
+        ai_score = artificial_prob * 100.0
+
+        # The Swin model is trained on natural photographs and tends to
+        # misclassify abstract/synthetic patterns (diagrams, fractals,
+        # notebook renders) as 'human'.  We gate the reported confidence
+        # so that low-certainty predictions carry proportionally less
+        # weight in the ensemble:
+        #   > 0.95 certainty → full confidence (reliable)
+        #   0.85–0.95 → halved (use with caution)
+        #   < 0.85 → heavily discounted (likely out-of-distribution)
+        certainty = max(artificial_prob, human_prob)
+        if certainty > 0.95:
+            confidence = certainty
+        elif certainty > 0.85:
+            confidence = certainty * 0.5
+        else:
+            confidence = certainty * 0.2
+
+        # Build explanation
+        top_class = ai_index if artificial_prob > human_prob else real_index
+        top_label = label_map.get(str(top_class), "artificial" if artificial_prob > human_prob else "human")
+
+        findings = []
+        findings.append(
+            f"Swin Transformer classifier [{_MODEL_NAME}]: "
+            f"artificial={artificial_prob:.1%}, human={human_prob:.1%}"
+        )
+        if artificial_prob > 0.7:
+            findings.append("Strong AI-generation signal from deep features.")
+        elif human_prob > 0.7:
+            findings.append("Strong real-camera signal from deep features.")
+        findings.append(f"Top prediction: '{top_label}' (conf: {confidence:.1%})")
+
+        # Extract top-2 logits for details
+        logit_vals = logits.cpu().numpy()[0].tolist()
+
+        return TestResult(
+            name="Deep Learning Detector (Swin Transformer)",
+            score=round(ai_score, 1),
+            confidence=round(confidence, 4),
+            explanation="; ".join(findings),
+            details={
+                "model": _MODEL_NAME,
+                "architecture": "SwinTransformer",
+                "ai_class_index": int(ai_index),
+                "real_class_index": int(real_index),
+                "label_map": _json_safe(label_map),
+                "artificial_prob": round(artificial_prob, 6),
+                "human_prob": round(human_prob, 6),
+                "logits": logit_vals,
+                "top_label": top_label,
+            },
+        )
+    except Exception as exc:
+        return TestResult(
+            name="Deep Learning Detector (Swin Transformer)",
+            score=50.0,
+            confidence=0.0,
+            explanation=f"Deep learning inference failed: {exc}",
+            details={"model": _MODEL_NAME, "error": str(exc)},
+        )
+
+
+# ════════════════════════════════════════════════════════════════════════════
+#  Test 3.5 — Error Level Analysis (ELA)
+# ════════════════════════════════════════════════════════════════════════════
+
+def _run_ela(cv_img: np.ndarray, quality: int = 95) -> tuple[np.ndarray, float]:
+    """Run Error Level Analysis (ELA) on an image.
+
+    ELA works by re-encoding the image at a lower JPEG quality and
+    comparing the difference.  Areas that were modified or
+    synthesised (common in AI images) show different error levels
+    than naturally captured regions.
+
+    Returns ``(ela_image, mean_error)`` where *ela_image* is a
+    scaled 8-bit array (0–255) and *mean_error* is the average
+    absolute difference.
+    """
+    # Convert to RGB and to PIL Image
+    rgb = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
+    pil_img = Image.fromarray(rgb)
+
+    # Convert to RGB mode (handle RGBA, P, etc.)
+    if pil_img.mode != "RGB":
+        pil_img = pil_img.convert("RGB")
+
+    orig_np = np.array(pil_img, dtype=np.float64)
+
+    # Re-encode at lower quality
+    buf = io.BytesIO()
+    pil_img.save(buf, format="JPEG", quality=quality)
+    buf.seek(0)
+    re_encoded = Image.open(buf)
+    re_np = np.array(re_encoded, dtype=np.float64)
+
+    # Ensure same size (JPEG may round dimensions)
+    if re_np.shape != orig_np.shape:
+        re_np = np.array(re_encoded.resize(pil_img.size), dtype=np.float64)
+
+    # Compute difference
+    diff = np.abs(orig_np - re_np)
+    max_diff = diff.max() if diff.max() > 0 else 1.0
+    ela_image = (diff / max_diff) * 255.0
+    ela_image = np.clip(ela_image, 0, 255).astype(np.uint8)
+    mean_error = float(diff.mean())
+
+    return ela_image, mean_error
+
+
+def test_error_level_analysis(cv_img: np.ndarray) -> TestResult:
+    """Run Error Level Analysis (ELA) as a forensic test.
+
+    ELA re-encodes the image at a lower JPEG quality and measures the
+    difference.  In real photographs, natural compression artefacts
+    vary smoothly.  In AI-generated images, the error levels are
+    often *too uniform* (because the generator produces the image
+    in one pass) or show *abrupt boundaries* (where elements were
+    pasted/composited).
+
+    The score is derived from:
+      • Mean absolute error (higher = more recompression artefacts)
+      • Std-dev of the error (lower = more uniform = suspicious)
+      • Presence of block-level boundaries at regular intervals
+    """
+    findings: list[str] = []
+    details: dict[str, Any] = {}
+    ai_prob = 50.0
+    confidence = 0.5
+
+    try:
+        ela_img, mean_error = _run_ela(cv_img, quality=95)
+
+        h, w = ela_img.shape[:2]
+        ela_gray = cv2.cvtColor(ela_img, cv2.COLOR_RGB2GRAY) if ela_img.ndim == 3 else ela_img
+        ela_std = float(np.std(ela_gray.astype(np.float64)))
+        ela_mean = float(np.mean(ela_gray.astype(np.float64)))
+        details["ela_mean_error"] = round(ela_mean, 4)
+        details["ela_std"] = round(ela_std, 4)
+        details["max_error"] = round(float(ela_img.max()), 4)
+
+        findings.append(f"ELA mean error: {ela_mean:.2f} (quality=95); std={ela_std:.2f}")
+
+        # --- Recalibrated ELA scoring ---
+        # Recombination error that is unusually *uniform* across the image
+        # (low spatial variance / low block-level CV) is a strong AI signal:
+        # a generator produces a globally-coherent image, so re-encoding it
+        # to JPEG introduces compression error that is far flatter than the
+        # naturally regionally-varying error of a real camera JPEG.
+        #
+        # Block-level (8×8) CV is the primary signal; the global std and the
+        # minimal-error case are secondary guards.  The previous thresholds
+        # left a dead zone (std ~8-15, block CV ~0.05-0.10) that pinned both
+        # real and synthetic images to 50%; the recalibration below makes ELA
+        # actively discriminate instead.
+
+        # 1. Global error uniformity (low std = synthetic)
+        if ela_std < 7.0:
+            findings.append(
+                "Very uniform ELA error distribution (low std) — "
+                "characteristic of AI-generated / synthetic images."
+            )
+            ai_prob = max(ai_prob, 68.0)
+            confidence = max(confidence, 0.68)
+
+        # 2. Block-level (8×8 JPEG blocks) uniformity — strongest signal.
+        #    Real JPEGs show regionally-varying block errors (high CV);
+        #    synthetic images show uniform block errors (low CV).
+        gray_ela = ela_gray.astype(np.float64)
+        block_size = 8
+        bh, bw = h // block_size, w // block_size
+        if bh > 4 and bw > 4:
+            trimmed = gray_ela[:bh*block_size, :bw*block_size]
+            blocks = trimmed.reshape(bh, block_size, bw, block_size).mean(axis=(1, 3))
+            block_std = float(np.std(blocks))
+            block_mean = float(np.mean(blocks))
+            block_cv = block_std / (block_mean + 1e-8)
+            details["ela_block_std"] = round(block_std, 4)
+            details["ela_block_cv"] = round(block_cv, 4)
+            findings.append(f"Block-level (8×8) ELA std={block_std:.2f}, CV={block_cv:.3f}")
+
+            if block_mean > 2.0:
+                if block_cv < 0.10:
+                    findings.append(
+                        "Uniform block-level ELA errors (CV<0.10) — synthetic "
+                        "compression pattern characteristic of AI generation."
+                    )
+                    ai_prob = max(ai_prob, 70.0)
+                    confidence = max(confidence, 0.70)
+                elif block_cv < 0.22:
+                    findings.append(
+                        "Below-average block-level ELA variation — compression "
+                        "artefacts unusually uniform (AI-leaning)."
+                    )
+                    ai_prob = max(ai_prob, 60.0)
+                    confidence = max(confidence, 0.60)
+                elif block_cv > 0.40:
+                    findings.append(
+                        "Block-level ELA varies naturally — consistent with real "
+                        "camera JPEG recompression."
+                    )
+                    ai_prob = min(ai_prob, 34.0)
+                    confidence = max(confidence, 0.65)
+
+        # Very low overall error = image was likely not JPEG-compressed naturally
+        if ela_mean < 1.0:
+            findings.append("Minimal ELA error — image may have been saved at high quality (common for PNGs from AI tools).")
+            ai_prob = max(ai_prob, 55.0)
+            confidence = max(confidence, 0.55)
+
+        details["ela_image_shape"] = [int(h), int(w)]
+        details["ela_image_size"] = int(ela_img.nbytes)
+
+    except Exception as exc:
+        findings.append(f"ELA analysis error: {exc}")
+        ai_prob = 50.0
+        confidence = 0.0
+        details["error"] = str(exc)
+
+    details["test_type"] = "ela"
+
+    # Determine verdict for individual test
+    if ai_prob < UNCERTAIN_LOW:
+        test_verdict = "Real Camera Photo"
+    elif ai_prob <= AI_THRESHOLD:
+        test_verdict = "Uncertain / Mixed Signals"
+    else:
+        test_verdict = "AI-Generated"
+
+    return TestResult(
+        name="Error Level Analysis (ELA)",
+        score=round(ai_prob, 1),
+        confidence=round(confidence, 4),
+        explanation="; ".join(findings),
+        details=details,
+    )
+
+
+# ════════════════════════════════════════════════════════════════════════════
+#  Test 3 — Frequency Domain Analysis (Enhanced 2D FFT)
 # ════════════════════════════════════════════════════════════════════════════
 
 def test_frequency(cv_img: np.ndarray) -> TestResult:
@@ -1104,6 +1498,46 @@ def test_frequency(cv_img: np.ndarray) -> TestResult:
         )
         ai_prob = min(95.0, ai_prob + 20.0)
         confidence = max(confidence, 0.6)
+
+    # --- Spectral flatness (spectral whiteness) ---
+    # AI images often have flatter spectra (less 1/f decay) — the geometric
+    # mean approaches the arithmetic mean.  Natural images have a steep
+    # 1/f^2 fall-off, giving a low spectral flatness.
+    nonzero_mag = magnitude[magnitude > 0.01]
+    if len(nonzero_mag) > 10:
+        # Use log-space for numerical stability
+        log_mag = np.log(nonzero_mag)
+        geo_mean = float(np.exp(np.mean(log_mag)))
+        arith_mean = float(np.mean(nonzero_mag))
+        spectral_flatness = geo_mean / (arith_mean + 1e-12)
+        details["spectral_flatness"] = round(spectral_flatness, 4)
+
+        if spectral_flatness > 0.15:
+            findings.append(
+                f"Spectrum is unusually flat (flatness={spectral_flatness:.3f}). "
+                f"Natural images have steep 1/f decay."
+            )
+            ai_prob = min(95.0, ai_prob + 15.0)
+            confidence = max(confidence, 0.55)
+
+    # --- Radial energy distribution ---
+    # Natural images concentrate energy at low frequencies; AI images may
+    # show more uniform spread across frequency bands.
+    if len(radial_profile) > 2:
+        # Energy in first third of frequencies (low freq) vs last third (high freq)
+        n = len(radial_profile)
+        low_energy = np.sum(radial_profile[:n // 3]) if n >= 3 else 0.0
+        high_energy = np.sum(radial_profile[2 * n // 3:]) if n >= 3 else 0.0
+        low_ratio = float(low_energy / (low_energy + high_energy + 1e-12))
+        details["low_freq_ratio"] = round(low_ratio, 4)
+
+        if low_ratio < 0.40:
+            findings.append(
+                f"Low-frequency energy is low ({low_ratio:.1%}). "
+                f"Natural images concentrate most energy at low frequencies."
+            )
+            ai_prob = min(95.0, ai_prob + 10.0)
+            confidence = max(confidence, 0.50)
 
     explanation = "; ".join(findings)
     return TestResult(
@@ -1701,8 +2135,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         {test_cards}
 
         <div class="footer">
-            AI Image Analyzer v3.0 · Educational / research use ·
-            Percentage-based forensic scoring · 6 complementary tests
+            AI Image Analyzer v3.1 · Educational / research use ·
+            Percentage-based forensic scoring · 8 complementary tests
         </div>
     </div>
 </body>
@@ -1970,6 +2404,8 @@ def analyze_image(image_path: str, threshold: float = 0.55) -> AnalysisReport:
     tests.append(test_frequency(cv_img))
     tests.append(test_statistics(cv_img))
     tests.append(test_artifacts(cv_img))
+    tests.append(test_deep_learning(cv_img))
+    tests.append(test_error_level_analysis(cv_img))
 
     has_exif = bool(exif_dict) or _determine_has_exif(tests)
     overall_score, overall_confidence, verdict, summary = aggregate_results(

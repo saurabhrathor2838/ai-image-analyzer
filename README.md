@@ -5,7 +5,9 @@ techniques — metadata forensics, C2PA provenance verification, noise
 pattern analysis, frequency-domain analysis, statistical tests, and
 visual-artifact detection.
 
-> **Version 3.0** — Now detects AI-generated notebook pages, ChatGPT/Gemini
+> **Version 3.1** — Ensemble pipeline now includes a pre-trained Swin Transformer
+> deep learning detector and Error Level Analysis (ELA), combined via confidence-
+> weighted scoring. Still detects AI-generated notebook pages, ChatGPT/Gemini
 > text diagrams, and synthetic documents with coloured backgrounds.
 > Features hyper-smooth background detection, dynamic weighting when EXIF
 > is missing, non-linear sigmoid score scaling for stronger verdicts,
@@ -20,19 +22,21 @@ visual-artifact detection.
 
 ## 🔍 How It Works
 
-The analyzer runs **six independent forensic tests** on each image and
+The analyzer runs **eight independent forensic tests** on each image and
 combines their results into an overall score and verdict.
 
 | # | Test | Weight | What It Looks For |
 |---|------|--------|--------------------|
-| 1 | **Metadata Forensics** | 0.15 | Missing camera make/model, absent timestamps, AI tool signatures in EXIF fields, resolution divisible by 64 |
-| 2 | **C2PA Metadata Verification** | 0.15 | C2PA ContentCredentials manifests, AI tool signatures in XMP/IPTC/raw headers, EXIF completeness |
-| 3 | **Noise Pattern Analysis** | 0.25 | Uniform noise across regions, absence of CFA (Bayer) interpolation patterns, chroma noise patterns |
-| 4 | **Frequency Domain Analysis** | 0.20 | Flat spectral slope (~1/f² fall-off), excessive high-frequency energy, periodic grid patterns |
+| 1 | **Metadata Forensics** | 0.10 | Missing camera make/model, absent timestamps, AI tool signatures in EXIF fields, resolution divisible by 64 |
+| 2 | **C2PA Metadata Verification** | 0.10 | C2PA ContentCredentials manifests, AI tool signatures in XMP/IPTC/raw headers, EXIF completeness |
+| 3 | **Noise Pattern Analysis** | 0.20 | Uniform noise across regions, absence of CFA (Bayer) interpolation patterns, chroma noise patterns |
+| 4 | **Frequency Domain Analysis** | 0.15 | Flat spectral slope (~1/f² fall-off), excessive high-frequency energy, periodic grid patterns, spectral flatness |
 | 5 | **Statistical Analysis** | 0.10 | Histogram entropy, inter-channel correlation, pixel distribution kurtosis, double-JPEG traces |
 | 6 | **Visual Artifact Detection** | 0.15 | Over-smoothing, unnatural symmetry, abnormal edge density, low texture variance, **Text & Grid Anomalies** (synthetic text/diagrams, hyper-smooth backgrounds of any color) |
+| 7 | **Deep Learning Detector** | 0.15 | Pre-trained Swin Transformer model fine-tuned on AI-generated vs real photos; confidence-gated to reduce false positives on abstract/synthetic images |
+| 8 | **Error Level Analysis (ELA)** | 0.05 | JPEG recompression error patterns, block-level uniformity, compression artefact distribution |
 
-### Scoring (v3.0 — Sigmoid-Calibrated)
+### Scoring (v3.1 — Ensemble + Sigmoid-Calibrated)
 
 Each test produces an **AI probability percentage** (0–100 %):
 0 % = certainly a real photograph, 50 % = uncertain, 100 % = certainly AI-generated.
@@ -60,12 +64,14 @@ is **absent**, weights are rebalanced to favour physical-signal evidence:
 
 | Test | Default Weight | No-EXIF Weight |
 |------|---------------|----------------|
-| Metadata Forensics | 0.15 | 0.30 |
-| C2PA Metadata Verification | 0.15 | 0.30 |
-| Noise Pattern Analysis | 0.25 | 0.25 × 1.25 |
-| Frequency Domain Analysis | 0.20 | 0.20 × 1.25 |
+| Metadata Forensics | 0.10 | 0.30 |
+| C2PA Metadata Verification | 0.10 | 0.30 |
+| Noise Pattern Analysis | 0.20 | 0.20 × 1.25 |
+| Frequency Domain Analysis | 0.15 | 0.15 × 1.25 |
 | Statistical Analysis | 0.10 | 0.10 × 1.25 |
 | Visual Artifact Detection | 0.15 | 0.15 × 1.35 |
+| Deep Learning Detector | 0.15 | 0.15 × 1.00 |
+| Error Level Analysis | 0.05 | 0.05 × 1.20 |
 
 ---
 
@@ -469,6 +475,34 @@ Using the 2-D Fast Fourier Transform (FFT):
 - **Symmetry:** AI generators can produce near-perfect symmetry
 - **Edge density:** Abnormally low or high edge counts
 - **Texture variance:** Statistical measure of local detail richness
+
+### Deep Learning Detector
+
+A pre-trained **Swin Transformer** (`umm-maybe/AI-image-detector` from HuggingFace Hub)
+classifies images as **artificial** (AI-generated) or **human** (real photograph).
+The model's "artificial" probability is mapped directly to the AI probability score.
+
+The model is **confidence-gated**: when its prediction certainty is below 95%, the
+reported confidence is reduced so it carries proportionally less weight in the
+ensemble. This prevents the model from over-influencing results on abstract or
+synthetic-pattern images where it may give uncertain predictions.
+
+The model downloads automatically on first run (~340 MB) and is cached locally.
+If the model fails to load (no network, torch not installed, etc.), the test
+gracefully returns a neutral 50% score with zero confidence.
+
+### Error Level Analysis (ELA)
+
+ELA works by **re-encoding** the image at a lower JPEG quality and measuring the
+difference. In real photographs, natural compression artefacts vary smoothly across
+the image. In AI-generated images, error levels are often:
+
+- **Too uniform** (low std-dev) — because the generator produces the image in
+  one pass with consistent compression
+- **Abrupt at boundaries** — where elements were pasted or composited
+
+The test measures mean error, std-dev, block-level (8×8 JPEG) error patterns,
+and overall error distribution uniformity to determine the AI probability.
 
 ---
 

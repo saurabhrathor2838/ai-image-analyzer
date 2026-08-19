@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-AI Image Analyzer — Streamlit Web UI  (v3.0 Professional Edition)
+AI Image Analyzer — Streamlit Web UI  (v3.1 Ensemble Edition)
 ================================================================
 A full-immersion, dark-theme web interface for the AI Image Analyzer
 forensic tool.  Features:
@@ -561,7 +561,7 @@ with st.sidebar:
         """)
 
     # ── Test descriptions accordion ─────────────────────────────────
-    with st.expander("🔬 The Six Forensic Tests", icon="🔍"):
+    with st.expander("🔬 The Eight Forensic Tests", icon="🔍"):
         test_info = [
             ("Metadata Forensics", "Missing camera make/model, absent timestamps, AI tool signatures, resolution divisible by 64"),
             ("C2PA Metadata Verification", "C2PA ContentCredentials manifests, AI tool signatures in XMP/raw headers, EXIF completeness"),
@@ -569,6 +569,8 @@ with st.sidebar:
             ("Frequency Domain Analysis", "Flat spectral slope, excessive high-frequency energy, periodic grid patterns"),
             ("Statistical Analysis", "Histogram entropy, inter-channel correlation, pixel distribution kurtosis, double-JPEG traces"),
             ("Visual Artifact Detection", "Over-smoothing, unnatural symmetry, abnormal edge density, text/grid anomalies"),
+            ("Deep Learning Detector", "Swin Transformer CNN model fine-tuned on AI-generated vs real photographs"),
+            ("Error Level Analysis", "JPEG recompression error patterns, block-level uniformity, compression artefact distribution"),
         ]
         for name, desc in test_info:
             st.markdown(f"**• {name}**\n<br><small style='color:#8a94a6'>{desc}</small>", unsafe_allow_html=True)
@@ -741,7 +743,7 @@ st.markdown(
             <div>
                 <h1 style="margin:0; color:#ffffff; font-size:2em;">AI Image Analyzer</h1>
                 <p style="margin:4px 0 0 0; color:#8a94a6; font-size:0.95em;">
-                    Forensic analysis of images for AI-generation fingerprints · Six tests · Real-time results
+                    Forensic analysis of images for AI-generation fingerprints · Eight tests · Real-time results
                 </p>
             </div>
         </div>
@@ -797,7 +799,7 @@ if uploaded_file is None:
                 📤 Upload an image to begin forensic analysis.
             </p>
             <p style="color: #8a94a6; font-size: 0.95em; margin-top: 12px;">
-                The tool runs six forensic tests and displays results
+                The tool runs eight forensic tests and displays results
                 with real-time scoring and interactive visualizations.
             </p>
             <div style="margin-top: 24px;">
@@ -814,7 +816,7 @@ if uploaded_file is None:
     with st.expander("📖 How It Works", expanded=True):
         st.markdown("""
         1. **Upload** an image using the drag-and-drop area above.
-        2. Wait for the **six forensic tests** to complete (1–3 seconds).
+        2. Wait for the **eight forensic tests** to complete (1–3 seconds).
         3. Review the **overall AI probability** and **per-test breakdown**.
         4. **Download** the HTML or JSON report for offline reference.
 

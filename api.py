@@ -99,10 +99,11 @@ async def root() -> dict[str, Any]:
         "name": "AI Image Analyzer API",
         "version": "2.1.0",
         "description": (
-            "REST API for detecting AI-generated images using six forensic "
+            "REST API for detecting AI-generated images using eight forensic "
             "techniques: metadata forensics, C2PA verification, noise analysis, "
-            "frequency-domain analysis, statistical tests, and visual artifact "
-            "detection."
+            "frequency-domain analysis, statistical tests, visual artifact "
+            "detection, deep learning detection (Swin Transformer), and error "
+            "level analysis."
         ),
         "endpoints": {
             "POST /analyze": "Upload an image file (multipart/form-data) for analysis",

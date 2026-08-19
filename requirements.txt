@@ -16,6 +16,12 @@ uvicorn[standard]>=0.29.0
 python-multipart>=0.0.9
 # pydantic>=2.9.0  (installed automatically with fastapi)
 
+# ── Deep Learning AI detector dependencies ─────────────────────────────
+# Required by test_deep_learning() — uses HuggingFace Transformers + Torch (CPU)
+torch>=2.0.0
+transformers>=4.30.0
+huggingface_hub>=0.16.0
+
 # ── Optional: enhanced metadata parsing ────────────────────────────────
 # The C2PA & EXIF test falls back to raw byte parsing when these are absent.
 # Install for richer EXIF / C2PA manifest extraction:
