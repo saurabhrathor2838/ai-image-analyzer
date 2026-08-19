@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
 """
-AI Image Analyzer — Streamlit Web UI
-=====================================
-A drag-and-drop web interface for the AI Image Analyzer forensic tool.
+AI Image Analyzer — Streamlit Web UI  (v3.0 Professional Edition)
+================================================================
+A full-immersion, dark-theme web interface for the AI Image Analyzer
+forensic tool.  Features:
 
-Allows users to upload an image and see:
-  • The uploaded image
-  • Overall AI probability score with a visual bar
-  • Per-test breakdown with individual scores and explanations
-  • Download buttons for HTML and JSON reports
-
-Prerequisites
--------------
-    pip install streamlit pillow numpy opencv-python-headless scipy
+  • Heavy CSS injection — glassmorphism containers, soft gradient borders,
+    rounded corners, custom hover effects, sleek typography.
+  • Full-page interactive background — CSS-animated particle network +
+    floating data-stream wireframes.
+  • Custom drag-and-drop dropzone (styled over the default uploader).
+  • Multi-column KPI dashboard with CSS conic-gradient progress rings.
+  • Color-coded verdict badges (emerald / amber / crimson).
+  • Collapsible accordion sidebar for test descriptions.
 
 Run
 ---
-    streamlit run app.py
+    python -m streamlit run app.py
 
 Then open http://localhost:8501 in your browser.
 """
@@ -28,31 +28,28 @@ import json
 import os
 import sys
 import tempfile
-from datetime import datetime
 from pathlib import Path
 
-# Ensure the project directory is on sys.path so we can import ai_image_analyzer
-# Regardless of where Streamlit is launched from
+# Ensure project dir is on sys.path regardless of launch cwd
 _PROJECT_DIR = Path(__file__).resolve().parent
 if str(_PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(_PROJECT_DIR))
 
-# If Streamlit is not installed, give the user a helpful message.
+# ── Streamlit import ──────────────────────────────────────────────────────
 try:
     import streamlit as st
 except ImportError:
     print(
         "ERROR: Streamlit is not installed.\n"
-        "To run the web UI, install it first:\n"
-        "    pip install streamlit\n"
-        "Then run:\n"
-        "    streamlit run app.py"
+        "To run the web UI:\n"
+        "    python -m pip install streamlit\n"
+        "    python -m streamlit run app.py"
     )
     raise
 
-# Import the analyzer (will be available once this file is in the project dir)
+# ── Analyzer import ───────────────────────────────────────────────────────
 try:
-    from ai_image_analyzer import (
+    from ai_image_analyzer import (  # noqa: E402
         analyze_image,
         generate_html_report,
         AI_THRESHOLD,
@@ -66,103 +63,751 @@ except ImportError as exc:
     )
     st.stop()
 
-# ── Page configuration ─────────────────────────────────────────────────────
+# ── Page configuration ────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="AI Image Analyzer",
+    page_title="AI Image Analyzer • Forensics Lab",
     page_icon="🔍",
-    layout="centered",
+    layout="wide",
     initial_sidebar_state="expanded",
 )
 
-# ── Constants ──────────────────────────────────────────────────────────────
+# ── Constants ─────────────────────────────────────────────────────────────
 SUPPORTED_FORMATS = ["jpg", "jpeg", "png", "bmp", "webp", "gif", "tiff", "tif"]
 
-# ── Sidebar ────────────────────────────────────────────────────────────────
-
-st.sidebar.title("🔍 AI Image Analyzer")
-st.sidebar.markdown(
+# ── Inject all CSS (background, glassmorphism, dropzone, progress rings) ───
+st.markdown(
     """
-    A forensic tool that detects AI-generated images using six
-    complementary techniques:
-    
-    1. **Metadata Forensics**
-    2. **C2PA Metadata Verification**
-    3. **Noise Pattern Analysis**
-    4. **Frequency Domain Analysis**
-    5. **Statistical Analysis**
-    6. **Visual Artifact Detection**
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+
+    /* ── Global resets & theme ────────────────────────────── */
+    html, body, .main, .stSidebar, .stApp {
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    }
+    .stApp {
+        background: #0a0a12;
+        overflow: hidden;
+    }
+
+    * {
+        scrollbar-width: thin;
+        scrollbar-color: #3a3a4e #1a1a2e;
+    }
+    ::-webkit-scrollbar { width: 8px; }
+    ::-webkit-scrollbar-track { background: #1a1a2e; }
+    ::-webkit-scrollbar-thumb { background: #3a3a4e; border-radius: 4px; }
+
+    h1, h2, h3, h4, .stMarkdown h1, .stMarkdown h2, .stMarkdown h3 {
+        font-family: 'Inter', sans-serif;
+        font-weight: 700;
+        letter-spacing: -0.02em;
+    }
+
+    /* ── Full-page particle network background ────────────── */
+    .stApp::before {
+        content: '';
+        position: fixed;
+        inset: 0;
+        z-index: -2;
+        background: radial-gradient(circle at 20% 50%, #1a1a2e 0%, transparent 50%),
+                    radial-gradient(circle at 80% 30%, #16213e 0%, transparent 50%),
+                    radial-gradient(circle at 50% 80%, #0f3460 0%, transparent 50%);
+    }
+
+    /* Floating particles */
+    .particle {
+        position: fixed;
+        background: rgba(100, 200, 255, 0.4);
+        border-radius: 50%;
+        animation: float 20s linear infinite;
+        z-index: -1;
+        pointer-events: none;
+    }
+    @keyframes float {
+        0%   { transform: translateY(0) translateX(0) rotate(0deg); opacity: 0; }
+        5%   { opacity: 0.6; }
+        50%  { opacity: 0.8; }
+        95%  { opacity: 0.4; }
+        100% { transform: translateY(-1200px) translateX(300px) rotate(360deg); opacity: 0; }
+    }
+
+    /* Data-stream wireframes (diagonal lines) */
+    .data-stream {
+        position: fixed;
+        background: linear-gradient(90deg, transparent, rgba(0, 212, 255, 0.05), transparent);
+        z-index: -1;
+        pointer-events: none;
+    }
+    @keyframes streamMove {
+        0%   { transform: translateX(-100%); }
+        100% { transform: translateX(200%); }
+    }
+
+    /* ── Glassmorphism containers ──────────────────────────── */
+    .glass-card {
+        background: rgba(15, 23, 42, 0.45);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 18px;
+        padding: 24px;
+        backdrop-filter: blur(16px) saturate(1.1);
+        -webkit-backdrop-filter: blur(16px) saturate(1.1);
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.30),
+                    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+        margin-bottom: 18px;
+    }
+
+    .glass-panel {
+        background: rgba(255, 255, 255, 0.03);
+        border: 1px solid rgba(255, 255, 255, 0.05);
+        border-radius: 14px;
+        padding: 18px;
+        backdrop-filter: blur(10px);
+        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.20);
+    }
+
+    /* ── Gradient border glow ─────────────────────────────── */
+    .gradient-border {
+        position: relative;
+        border-radius: 18px;
+    }
+    .gradient-border::before {
+        content: '';
+        position: absolute;
+        inset: -1px;
+        border-radius: 19px;
+        z-index: -1;
+        padding: 1px;
+        background: linear-gradient(135deg,
+            rgba(0, 212, 255, 0.50) 0%,
+            rgba(100, 200, 255, 0.30) 50%,
+            rgba(255, 87, 114, 0.40) 100%);
+        -webkit-mask:
+            linear-gradient(#fff 0 0) content-box,
+            linear-gradient(#fff 0 0);
+        -webkit-mask-composite: destination-out;
+        mask-composite: exclude;
+    }
+
+    /* ── Custom dropzone ───────────────────────────────────── */
+    .upload-container {
+        border: 2px dashed rgba(100, 200, 255, 0.3);
+        border-radius: 16px;
+        padding: 40px 30px;
+        text-align: center;
+        background: rgba(15, 23, 42, 0.40);
+        backdrop-filter: blur(16px) saturate(1.1);
+        transition: all 0.3s ease;
+        cursor: pointer;
+    }
+    .upload-container:hover {
+        border-color: rgba(0, 212, 255, 0.6);
+        background: rgba(15, 23, 42, 0.55);
+        transform: translateY(-2px);
+        box-shadow: 0 12px 40px rgba(0, 212, 255, 0.12);
+    }
+    .upload-container.drag-over {
+        border-color: rgba(0, 212, 255, 0.8);
+        background: rgba(15, 23, 42, 0.65);
+        box-shadow: 0 0 30px rgba(0, 212, 255, 0.25);
+    }
+    .upload-icon {
+        font-size: 3em;
+        margin-bottom: 12px;
+        opacity: 0.7;
+        transition: opacity 0.3s ease;
+    }
+    .upload-container:hover .upload-icon { opacity: 1; }
+
+    /* Hide default Streamlit uploader but keep it functional */
+    .stFileUploader > div:first-child {
+        display: none !important;
+    }
+
+    /* ── KPI Cards ──────────────────────────────────────────── */
+    .kpi-card {
+        background: rgba(15, 23, 42, 0.45);
+        border-radius: 16px;
+        padding: 22px 18px;
+        text-align: center;
+        border: 1px solid rgba(255, 255, 255, 0.06);
+        backdrop-filter: blur(14px);
+        transition: transform 0.3s ease, box-shadow 0.3s ease;
+    }
+    .kpi-card:hover {
+        transform: translateY(-4px);
+        box-shadow: 0 12px 32px rgba(0, 0, 0, 0.40);
+        border-color: rgba(100, 200, 255, 0.25);
+    }
+    .kpi-value {
+        font-size: 2em;
+        font-weight: 700;
+        letter-spacing: -0.03em;
+    }
+    .kpi-label {
+        font-size: 0.85em;
+        color: #8a94a6;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        margin-top: 4px;
+    }
+
+    /* ── Circular progress ring ───────────────────────────── */
+    .progress-ring {
+        position: relative;
+        width: 160px;
+        height: 160px;
+        margin: 0 auto;
+    }
+    .progress-ring svg {
+        transform: rotate(-90deg);
+    }
+    .progress-ring circle {
+        fill: none;
+        stroke-linecap: round;
+        transition: stroke-dashoffset 0.8s ease-out;
+    }
+    .progress-ring-text {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        text-align: center;
+    }
+
+    /* ── Verdict badges ─────────────────────────────────────── */
+    .badge {
+        display: inline-block;
+        padding: 8px 20px;
+        border-radius: 50px;
+        font-weight: 600;
+        font-size: 1em;
+        letter-spacing: 0.5px;
+    }
+    .badge-real    { background: linear-gradient(135deg, #00c9a7, #007acc); color: #fff; }
+    .badge-amber   { background: linear-gradient(135deg, #ffb347, #ff6b35); color: #1a1a2e; }
+    .badge-ai      { background: linear-gradient(135deg, #ff5f6d, #ffc371); color: #0a0a12; }
+
+    /* ── Test result cards ──────────────────────────────────── */
+    .test-card {
+        background: rgba(15, 23, 42, 0.35);
+        border: 1px solid rgba(255, 255, 255, 0.06);
+        border-left: 3px solid rgba(100, 200, 255, 0.4);
+        border-radius: 12px;
+        padding: 16px 20px;
+        margin-bottom: 12px;
+        transition: border-color 0.3s ease, background 0.3s ease;
+    }
+    .test-card:hover {
+        border-left-color: rgba(0, 212, 255, 0.8);
+        background: rgba(15, 23, 42, 0.55);
+    }
+    .test-card h4 {
+        color: #ffffff;
+        font-size: 1.05em;
+        margin: 0 0 4px 0;
+    }
+    .test-card .score-chip {
+        display: inline-block;
+        padding: 2px 10px;
+        border-radius: 12px;
+        font-size: 0.8em;
+        font-weight: 600;
+    }
+    .score-chip-real { background: rgba(40, 167, 69, 0.2); color: #28a745; }
+    .score-chip-ai  { background: rgba(220, 53, 69, 0.2); color: #dc3545; }
+    .score-chip-mid { background: rgba(255, 193, 7, 0.2); color: #ffc107; }
+
+    /* ── Custom buttons ─────────────────────────────────────── */
+    .stButton button[kind="primary"],
+    .css-1cpxjq4 .stButton > button {
+        background: linear-gradient(135deg, #0066cc, #00b5ff);
+        color: white !important;
+        border: none;
+        border-radius: 12px;
+        padding: 10px 24px;
+        font-weight: 600;
+        font-size: 0.95em;
+        transition: all 0.3s ease;
+        box-shadow: 0 4px 16px rgba(0, 180, 255, 0.25);
+    }
+    .stButton button:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 8px 24px rgba(0, 180, 255, 0.35);
+    }
+    .stButton button[kind="primary"]:hover {
+        filter: brightness(1.1);
+    }
+
+    /* Download button styling */
+    .stDownloadButton button {
+        background: rgba(255, 255, 255, 0.05);
+        color: #ffffff !important;
+        border: 1px solid rgba(100, 200, 255, 0.3);
+        border-radius: 12px;
+        padding: 10px 20px;
+        font-weight: 500;
+        transition: all 0.3s ease;
+    }
+    .stDownloadButton button:hover {
+        background: rgba(100, 200, 255, 0.15);
+        border-color: rgba(0, 212, 255, 0.6);
+        transform: translateY(-2px);
+    }
+
+    /* ── Summary table ──────────────────────────────────────── */
+    .summary-table th {
+        background: rgba(0, 212, 255, 0.1);
+        color: #ffffff;
+        font-weight: 600;
+        text-transform: uppercase;
+        font-size: 0.8em;
+        letter-spacing: 0.05em;
+    }
+    .summary-table td {
+        color: #c5c9d1;
+    }
+    .summary-table tr:nth-child(even) {
+        background: rgba(15, 23, 42, 0.25);
+    }
+    .summary-table tr:hover {
+        background: rgba(15, 23, 42, 0.45);
+    }
+
+    /* ── Sidebar styling ───────────────────────────────────── */
+    .stSidebar .stMarkdown,
+    .stSidebar .stTitle,
+    .stSidebar .stInfo,
+    .stSidebar .stTextInput {
+        color: #c5c9d1 !important;
+    }
+    .stSidebar h1, .stSidebar h2, .stSidebar h3 {
+        color: #00d4ff !important;
+    }
+
+    /* ── Expander (accordion) styling ───────────────────────── */
+    .streamlit-expander {
+        background: rgba(15, 23, 42, 0.30);
+        border: 1px solid rgba(255, 255, 255, 0.06);
+        border-radius: 12px;
+    }
+    .streamlit-expander .streamlit-expander-header {
+        color: #c5c9d1 !important;
+        font-weight: 600;
+    }
+    .streamlit-expander .streamlit-expander-content {
+        color: #8a94a6 !important;
+    }
+
+    /* ── Spinner / loader ───────────────────────────────────── */
+    .stSpinner {
+        color: #00d4ff !important;
+    }
+
+    /* ── Image border ───────────────────────────────────────── */
+    .stImage img {
+        border-radius: 14px;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+    }
+
+    /* ── Main content padding ───────────────────────────────── */
+    .main .block-container {
+        padding-top: 40px;
+        padding-bottom: 60px;
+    }
+
+    /* ── Footer ─────────────────────────────────────────────── */
+    .footer {
+        text-align: center;
+        color: #4a4a6a;
+        font-size: 0.8em;
+        padding: 20px;
+        border-top: 1px solid rgba(255, 255, 255, 0.06);
+        margin-top: 30px;
+    }
+
+    /* Hide the default file uploader label text */
+    .stFileUploader .css-1uibutton { display: none; }
     """
 )
 
-st.sidebar.markdown("---")
-st.sidebar.markdown(
-    """
-    **Verdict Thresholds (v2.0):**
-    | AI Probability | Verdict |
-    |---|
-    | < 30% | 🟢 Real Camera Photo |
-    | 30–65% | 🟡 Uncertain |
-    | > 65% | 🔴 AI-Generated |
-    """
-)
+# ── JavaScript: inject particle network & data streams ──────────────────────
+# We use streamlit's component or a simple HTML injection via st.markdown
+PARTICLE_JS = """
+<div id="bg-particles"></div>
+<div id="bg-streams"></div>
+<script>
+(function() {
+    var container = document.getElementById('bg-particles');
+    var ns = 80;
+    for (var i = 0; i < ns; i++) {
+        var p = document.createElement('div');
+        p.className = 'particle';
+        var size = Math.random() * 3 + 1;
+        p.style.width = size + 'px';
+        p.style.height = size + 'px';
+        p.style.left = Math.random() * 100 + 'vw';
+        p.style.top = Math.random() * 100 + 'vh';
+        var dur = 15 + Math.random() * 15;
+        p.style.animationDuration = dur + 's';
+        p.style.animationDelay = -Math.random() * dur + 's';
+        var opacity = 0.1 + Math.random() * 0.3;
+        p.style.background = 'rgba(100, 200, 255, ' + opacity + ')';
+        container.appendChild(p);
+    }
 
-st.sidebar.markdown("---")
-st.sidebar.info(
-    "⚠️ Educational / research use only. "
-    "No automated detector is 100 % reliable."
-)
+    // Draw connecting lines via canvas overlay
+    var canvas = document.createElement('canvas');
+    canvas.style.position = 'fixed';
+    canvas.style.top = 0;
+    canvas.style.left = 0;
+    canvas.style.zIndex = '-1';
+    canvas.style.pointerEvents = 'none';
+    document.body.appendChild(canvas);
+
+    var ctx = canvas.getContext('2d');
+    function resize() {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    var particles = [];
+    for (var j = 0; j < 60; j++) {
+        particles.push({
+            x: Math.random() * canvas.width,
+            y: Math.random() * canvas.height,
+            vx: (Math.random() - 0.5) * 0.3,
+            vy: (Math.random() - 0.5) * 0.3,
+        });
+    }
+
+    function animate() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.strokeStyle = 'rgba(100, 200, 255, 0.08)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        for (var a = 0; a < particles.length; a++) {
+            for (var b = a + 1; b < particles.length; b++) {
+                var dx = particles[a].x - particles[b].x;
+                var dy = particles[a].y - particles[b].y;
+                if (dx * dx + dy * dy < 10000) {
+                    ctx.moveTo(particles[a].x, particles[a].y);
+                    ctx.lineTo(particles[b].x, particles[b].y);
+                }
+            }
+        }
+        ctx.stroke();
+
+        for (var k = 0; k < particles.length; k++) {
+            particles[k].x += particles[k].vx;
+            particles[k].y += particles[k].vy;
+            if (particles[k].x < 0) particles[k].x = canvas.width;
+            if (particles[k].x > canvas.width) particles[k].x = 0;
+            if (particles[k].y < 0) particles[k].y = canvas.height;
+            if (particles[k].y > canvas.height) particles[k].y = 0;
+        }
+        requestAnimationFrame(animate);
+    }
+    animate();
+})();
+</script>
+"""
+
+st.markdown(PARTICLE_JS, unsafe_allow_html=True)
+
+# ── Sidebar ─────────────────────────────────────────────────────────────────
+with st.sidebar:
+    st.markdown(
+        """
+        <div class="glass-card" style="margin-bottom: 0;">
+            <h1 style="color: #00d4ff; margin: 0; font-size: 1.6em;">🔍 Forensics Lab</h1>
+            <p style="color: #8a94a6; font-size: 0.9em; margin: 4px 0 0 0;">
+                v3.0 — AI Image Detector
+            </p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── Verdict thresholds accordion ──────────────────────────────────
+    with st.expander("📊 Verdict Thresholds", icon="🎯"):
+        st.markdown("""
+        | AI Probability | Verdict          | Badge |
+        |----------------|------------------|-------|
+        | **< 20%**      | Real Camera Photo | 🟢    |
+        | **20–55%**     | Uncertain        | 🟡    |
+        | **> 55%**      | AI-Generated     | 🔴    |
+        """)
+
+    # ── Test descriptions accordion ─────────────────────────────────
+    with st.expander("🔬 The Six Forensic Tests", icon="🔍"):
+        test_info = [
+            ("Metadata Forensics", "Missing camera make/model, absent timestamps, AI tool signatures, resolution divisible by 64"),
+            ("C2PA Metadata Verification", "C2PA ContentCredentials manifests, AI tool signatures in XMP/raw headers, EXIF completeness"),
+            ("Noise Pattern Analysis", "Uniform noise across regions, absence of CFA/Bayer interpolation patterns, chroma noise patterns"),
+            ("Frequency Domain Analysis", "Flat spectral slope, excessive high-frequency energy, periodic grid patterns"),
+            ("Statistical Analysis", "Histogram entropy, inter-channel correlation, pixel distribution kurtosis, double-JPEG traces"),
+            ("Visual Artifact Detection", "Over-smoothing, unnatural symmetry, abnormal edge density, text/grid anomalies"),
+        ]
+        for name, desc in test_info:
+            st.markdown(f"**• {name}**\n<br><small style='color:#8a94a6'>{desc}</small>", unsafe_allow_html=True)
+
+    # ── About accordion ────────────────────────────────────────────────
+    with st.expander("ℹ️ About This Tool", icon="ℹ️"):
+        st.markdown("""
+        This tool helps determine whether an image was created by an AI
+        model or captured by a real camera. It is for **educational and
+        research use only** — no automated detector is 100% reliable.
+        """)
+
+    # ── Disclaimer ──────────────────────────────────────────────────────
+    st.markdown("<hr style='border-color: rgba(255,255,255,0.1);'>", unsafe_allow_html=True)
+    st.markdown(
+        "<p style='color: #8a94a6; font-size: 0.8em;'>⚠️ Educational / research use only. "
+        "No automated detector is 100% reliable.</p>",
+        unsafe_allow_html=True,
+    )
 
 
-# ── Helpers ────────────────────────────────────────────────────────────────
+# ── Helper functions ────────────────────────────────────────────────────────
 
-def _verdict_badge(score: float) -> str:
-    """Return an emoji + verdict label for a given AI probability score."""
+def _badge_class(score: float) -> str:
+    """Return CSS class for verdict badge."""
     if score < UNCERTAIN_LOW:
-        return "🟢 Real Camera Photo"
+        return "badge-real"
     elif score <= AI_THRESHOLD:
-        return "🟡 Uncertain / Mixed Signals"
+        return "badge-amber"
     else:
-        return "🔴 AI-Generated"
+        return "badge-ai"
 
 
-def _verdict_color(score: float) -> str:
-    """Return a hex colour for the verdict."""
+def _badge_text(score: float) -> str:
+    """Return verdict label."""
     if score < UNCERTAIN_LOW:
-        return "#28a745"  # green
+        return "Real Camera Photo"
     elif score <= AI_THRESHOLD:
-        return "#ffc107"  # amber
+        return "Uncertain / Mixed Signals"
     else:
-        return "#dc3545"  # red
+        return "AI-Generated"
 
 
-def _truncate_text(text: str, max_len: int = 200) -> str:
+def _badge_html(score: float) -> str:
+    """Return HTML for a color-coded verdict badge."""
+    cls = _badge_class(score)
+    text = _badge_text(score)
+    return f'<span class="badge {cls}">{text}</span>'
+
+
+def _ring_color(score: float) -> tuple[str, str, str]:
+    """Return (track_color, progress_color, bg_color) for the progress ring."""
+    r = min(1.0, score / 100.0)
+    if score < UNCERTAIN_LOW:
+        # Green → real
+        return (
+            "rgba(40, 167, 69, 0.15)",
+            "rgba(40, 167, 69, 0.9)",
+            "rgba(40, 167, 69, 0.1)",
+        )
+    elif score <= AI_THRESHOLD:
+        # Amber → uncertain
+        return (
+            "rgba(255, 193, 7, 0.15)",
+            "rgba(255, 193, 7, 0.9)",
+            "rgba(255, 193, 7, 0.1)",
+        )
+    else:
+        # Red → AI
+        return (
+            "rgba(220, 53, 69, 0.15)",
+            "rgba(220, 53, 69, 0.9)",
+            "rgba(220, 53, 69, 0.1)",
+        )
+
+
+def _progress_ring(score: float) -> str:
+    """Generate HTML/CSS for a circular progress ring (conic-gradient)."""
+    pct = max(0, min(100, score))
+    track_color, progress_color, bg_color = _ring_color(pct)
+    # Use conic-gradient: progress fills pct% of the circle
+    return f"""
+    <div style="
+        width: 160px; height: 160px; margin: 0 auto;
+        border-radius: 50%;
+        background: conic-gradient(
+            from 0deg,
+            {progress_color} 0deg {pct * 3.6}deg,
+            {track_color} {pct * 3.6}deg 360deg
+        );
+        display: flex; align-items: center; justify-content: center;
+        box-shadow: inset 0 0 20px {bg_color};
+    ">
+        <div style="
+            background: rgba(10, 14, 18, 0.7);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 50%;
+            width: 110px; height: 110px;
+            display: flex; flex-direction: column;
+            align-items: center; justify-content: center;
+        ">
+            <span style="font-size: 1.8em; font-weight: 700; color: {progress_color};">
+                {pct:.1f}%
+            </span>
+            <span style="font-size: 0.7em; color: #8a94a6; margin-top: 4px;">
+                AI Probability
+            </span>
+        </div>
+    </div>
+    """
+
+
+def _score_chip(score: float) -> str:
+    """Return HTML for a small score chip next to test names."""
+    pct = max(0, min(100, score))
+    if score < UNCERTAIN_LOW:
+        cls, label = "score-chip-real", "REAL"
+    elif score <= AI_THRESHOLD:
+        cls, label = "score-chip-mid", "MID"
+    else:
+        cls, label = "score-chip-ai", "AI"
+    return f'<span class="{cls}">{pct:.0f}% · {label}</span>'
+
+
+def _truncate(text: str, max_len: int = 300) -> str:
     """Truncate long text with an ellipsis."""
     if len(text) <= max_len:
         return text
     return text[:max_len] + "…"
 
 
-# ── Main UI ────────────────────────────────────────────────────────────────
+def _format_details(details: dict) -> str:
+    """Format a test's details dict into HTML lines."""
+    lines = []
+    for key, value in details.items():
+        if isinstance(value, dict):
+            inner = json.dumps(value, default=str, indent=2)[:200]
+            lines.append(f"<b>{key}:</b> <code style='color:#66ccff'>{inner}</code>")
+        elif isinstance(value, (list, tuple)):
+            val_str = ", ".join(str(v) for v in value)[:120]
+            lines.append(f"<b>{key}:</b> <span style='color:#c5c9d1'>{val_str}</span>")
+        elif isinstance(value, bool):
+            lines.append(f"<b>{key}:</b> <span style='color:#66ccff'>{'✓' if value else '✗'}</span>")
+        elif isinstance(value, float):
+            lines.append(f"<b>{key}:</b> <span style='color:#c5c9d1'>{value:.4f}</span>")
+        elif isinstance(value, int):
+            lines.append(f"<b>{key}:</b> <span style='color:#c5c9d1'>{value}</span>")
+        else:
+            lines.append(f"<b>{key}:</b> <span style='color:#c5c9d1'>{str(value)[:120]}</span>")
+    return "<br>".join(lines)
 
-st.title("🔍 AI Image Analyzer")
+
+def _inject_particles(n: int = 60):
+    """Inject CSS-animated particle elements into the page."""
+    particles_html = ""
+    for _ in range(n):
+        size = 1 + 2  # will be randomized per-particle in JS instead
+        particles_html += f'<div class="particle" style="width:{size}px;height:{size}px;"></div>'
+    return particles_html
+
+
+# ── Main content ────────────────────────────────────────────────────────────
+
+# Title + intro
 st.markdown(
     """
-    Upload an image to analyse it for AI-generation fingerprints.
-    The tool runs **six forensic tests** and combines their results into
-    an overall AI-probability score.
+    <div class="glass-card gradient-border" style="margin-bottom: 24px;">
+        <div style="display:flex; align-items:center; gap:14px;">
+            <span style="font-size:2.4em;">🔍</span>
+            <div>
+                <h1 style="margin:0; color:#ffffff; font-size:2em;">AI Image Analyzer</h1>
+                <p style="margin:4px 0 0 0; color:#8a94a6; font-size:0.95em;">
+                    Forensic analysis of images for AI-generation fingerprints · Six tests · Real-time results
+                </p>
+            </div>
+        </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+# ── Custom drag-and-drop dropzone ──────────────────────────────────────────
+st.markdown(
     """
+    <style>
+    /* Style the file uploader to look like a dropzone */
+    .stFileUploader {
+        margin: 0 !important;
+        padding: 0 !important;
+    }
+    .stFileUploader > div {
+        background: rgba(15, 23, 42, 0.40) !important;
+        border: 2px dashed rgba(100, 200, 255, 0.3) !important;
+        border-radius: 16px !important;
+        padding: 40px 30px !important;
+        text-align: center !important;
+        backdrop-filter: blur(16px) saturate(1.1) !important;
+        transition: all 0.3s ease !important;
+    }
+    .stFileUploader > div:hover {
+        border-color: rgba(0, 212, 255, 0.6) !important;
+        background: rgba(15, 23, 42, 0.55) !important;
+        box-shadow: 0 12px 40px rgba(0, 212, 255, 0.12) !important;
+        transform: translateY(-2px) !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
 )
 
-# ── File upload ────────────────────────────────────────────────────────────
 uploaded_file = st.file_uploader(
-    "Drag & drop an image here, or click to browse",
+    "🔍 Drag & drop an image here, or click to browse",
     type=SUPPORTED_FORMATS,
-    help="Supported formats: "
-         + ", ".join(ext.upper() for ext in SUPPORTED_FORMATS),
+    help="Supported: JPEG, PNG, BMP, WebP, GIF, TIFF",
+    key="file_uploader",
+    label_visibility="visible",
 )
 
-if uploaded_file is not None:
-    # Save to a temporary file so the analyzer can read it
+# ── No file uploaded — show instructions ────────────────────────────────────
+if uploaded_file is None:
+    st.markdown("---")
+    st.markdown(
+        """
+        <div class="glass-panel" style="text-align: center; padding: 40px;">
+            <p style="font-size: 1.4em; color: #c5c9d1;">
+                📤 Upload an image to begin forensic analysis.
+            </p>
+            <p style="color: #8a94a6; font-size: 0.95em; margin-top: 12px;">
+                The tool runs six forensic tests and displays results
+                with real-time scoring and interactive visualizations.
+            </p>
+            <div style="margin-top: 24px;">
+                <span style="display:inline-block; padding:6px 16px; border-radius:8px;
+                             background:rgba(0,212,255,0.1); color:#00d4ff; font-size:0.85em;">
+                    Supported: JPG, PNG, BMP, WebP, GIF, TIFF
+                </span>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    with st.expander("📖 How It Works", expanded=True):
+        st.markdown("""
+        1. **Upload** an image using the drag-and-drop area above.
+        2. Wait for the **six forensic tests** to complete (1–3 seconds).
+        3. Review the **overall AI probability** and **per-test breakdown**.
+        4. **Download** the HTML or JSON report for offline reference.
+
+        > **Note:** This tool is for educational and research use only.
+        > No automated detector is 100 % reliable. Always use human
+        > judgment when interpreting results.
+        """)
+
+else:
+    # ── Save temp file & run analysis ────────────────────────────────────────
     with tempfile.NamedTemporaryFile(
         suffix=f".{uploaded_file.name.split('.')[-1].lower()}",
         delete=False,
@@ -172,117 +817,203 @@ if uploaded_file is not None:
 
     try:
         with st.spinner("🧪 Running forensic analysis..."):
-            report = analyze_image(tmp_path)
+            report = analyze_image(tmp_path, threshold=0.55)
 
-        # ── Image preview + overall score (side by side) ───────────────────
-        col_img, col_score = st.columns([1, 1], gap="large")
+        # ── Header: image name + verdict badge ──────────────────────────────
+        st.markdown("<br>", unsafe_allow_html=True)
+        col_title, col_badge = st.columns([3, 1], gap="small")
+        with col_title:
+            st.markdown(
+                f"<h2 style='margin:0; color:#ffffff'>Analysis: <span style='color:#00d4ff'>"
+                f"{uploaded_file.name}</span></h2>",
+                unsafe_allow_html=True,
+            )
+        with col_badge:
+            st.markdown(_badge_html(report.overall_score), unsafe_allow_html=True)
 
-        with col_img:
+        # ── Top-level KPI cards ─────────────────────────────────────────────
+        col1, col2, col3, col4 = st.columns(4, gap="medium")
+
+        with col1:
+            st.markdown(
+                f"""
+                <div class="kpi-card" style="border:1px solid rgba(255,255,255,0.06);">
+                    <div style="font-size:1.6em; color:#00d4ff;">{report.overall_score:.1f}%</div>
+                    <div class="kpi-label">AI Probability</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        with col2:
+            st.markdown(
+                f"""
+                <div class="kpi-card" style="border:1px solid rgba(255,255,255,0.06);">
+                    <div style="font-size:1.6em; color:#00c9a7">{100 - report.overall_score:.1f}%</div>
+                    <div class="kpi-label">Real Probability</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        with col3:
+            st.markdown(
+                f"""
+                <div class="kpi-card" style="border:1px solid rgba(255,255,255,0.06);">
+                    <div style="font-size:1.6em; color:#ff9d00">{report.overall_confidence:.0%}</div>
+                    <div class="kpi-label">Confidence</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        with col4:
+            resolution = f"{report.image_size[0]}×{report.image_size[1]}" if report.image_size else "—"
+            st.markdown(
+                f"""
+                <div class="kpi-card" style="border:1px solid rgba(255,255,255,0.06);">
+                    <div style="font-size:1.4em; color:#66ccff">{report.file_size / 1024:.0f} KB</div>
+                    <div class="kpi-label">{resolution}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        # ── Progress ring + image preview ────────────────────────────────
+        st.markdown("<br>", unsafe_allow_html=True)
+        col_ring, col_image, col_verdict = st.columns([1, 1.2, 1], gap="medium")
+
+        with col_ring:
+            st.markdown(
+                f"""
+                <div class="glass-panel" style="text-align:center; padding:30px 20px;">
+                    {_progress_ring(report.overall_score)}
+                    <div style="margin-top:16px;">
+                        {_badge_html(report.overall_score)}
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        with col_image:
             st.image(
                 tmp_path,
                 caption=f"Uploaded: {uploaded_file.name}",
                 use_container_width=True,
             )
 
-        with col_score:
-            ai_pct = report.overall_score
-            real_pct = 100.0 - ai_pct
-            verdict = report.verdict
-            color = _verdict_color(ai_pct)
-            badge = _verdict_badge(ai_pct)
-
-            st.markdown(
-                f"<h1 style='text-align: center; color: {color}'>"
-                f"{ai_pct:.1f}%</h1>",
-                unsafe_allow_html=True,
-            )
-            st.markdown(
-                f"<h3 style='text-align: center'>{badge}</h3>",
-                unsafe_allow_html=True,
-            )
-            st.markdown(
-                f"<p style='text-align: center; color: #888'>"
-                f"Real confidence: {real_pct:.1f}%<br>"
-                f"Overall confidence: {report.overall_confidence:.0%}"
-                f"</p>",
-                unsafe_allow_html=True,
-            )
-
-            # Visual score bar
+        with col_verdict:
+            confidence = report.overall_confidence
+            verdict_label = _badge_text(report.overall_score)
             st.markdown(
                 f"""
-                <div style="background: linear-gradient(90deg, #004d00 0%, #00d4ff 50%, #8B0000 100%);
-                            height: 24px; border-radius: 6px; position: relative;">
-                    <div style="position: absolute; top: -6px; left: {ai_pct:.1f}%;
-                                width: 3px; height: 36px; background: #fff;"></div>
-                </div>
-                <div style="display: flex; justify-content: space-between; font-size: 0.8em; color: #888">
-                    <span>0% REAL</span><span>50%</span><span>100% AI</span>
+                <div class="glass-panel" style="text-align:center; padding:30px;">
+                    <h3 style="color:#ffffff; margin:0 0 12px 0;">Verdict</h3>
+                    <div style="font-size:1.3em; font-weight:600; color:#ffffff; margin-bottom:12px;">
+                        {verdict_label}
+                    </div>
+                    <div style="font-size:0.9em; color:#8a94a6; line-height:1.6;">
+                        AI: <b style="color:#ff6b6b">{report.overall_score:.1f}%</b><br>
+                        Real: <b style="color:#00c9a7">{100 - report.overall_score:.1f}%</b><br>
+                        Confidence: <b style="color:#00d4ff">{confidence:.0%}</b>
+                    </div>
+                    <div style="margin-top:16px; font-size:0.85em; color:#4a4a6a; padding-top:12px;
+                                border-top: 1px solid rgba(255,255,255,0.06);">
+                        {report.timestamp}
+                    </div>
                 </div>
                 """,
                 unsafe_allow_html=True,
             )
 
-        # ── Overall summary ────────────────────────────────────────────────
-        st.markdown("---")
-        st.markdown(f"### 📋 Summary\n*{report.summary}*")
+        # ── Summary ────────────────────────────────────────────────────────
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown(
+            f"""
+            <div class="glass-card gradient-border">
+                <h3 style="color:#ffffff; margin:0 0 8px 0;">📋 Executive Summary</h3>
+                <p style="color:#c5c9d1; margin:0; line-height:1.5;">
+                    {report.summary}
+                </p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
         # ── Per-test breakdown ─────────────────────────────────────────────
-        st.markdown("### 🔬 Test Breakdown")
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown(
+            "<h3 style='color:#ffffff; margin-bottom:12px;'>🔬 Forensic Test Breakdown</h3>",
+            unsafe_allow_html=True,
+        )
 
         for test in report.tests:
             ai_p = test.score
             real_p = 100.0 - ai_p
-            color = _verdict_color(ai_p)
-            badge = _verdict_badge(ai_p)
+            confidence = test.confidence
+            badge_text = _badge_text(ai_p)
+            chip_html = _score_chip(ai_p)
+            bg_gradient = ""
+            if ai_p < UNCERTAIN_LOW:
+                bg_gradient = "linear-gradient(90deg, #004d00 0%, #00d4ff 50%, #8B0000 100%)"
+            elif ai_p <= AI_THRESHOLD:
+                bg_gradient = "linear-gradient(90deg, #004d00 0%, #ffcc00 50%, #8B0000 100%)"
+            else:
+                bg_gradient = "linear-gradient(90deg, #004d00 0%, #ff0055 50%, #8B0000 100%)"
 
             with st.expander(
-                f"{test.name} — AI: {ai_p:.0f}% | Real: {real_p:.0f}% ({badge})",
-                icon="🔍",
+                f" {test.name} — AI: {ai_p:.0f}% | Real: {real_p:.0f}%",
+                icon=f"{'🟢' if ai_p < UNCERTAIN_LOW else '🟡' if ai_p <= AI_THRESHOLD else '🔴'}",
             ):
-                cols = st.columns([2, 1])
+                st.markdown(f"#### {test.name}  {chip_html}", unsafe_allow_html=True)
 
-                with cols[0]:
-                    # Inline bar visualization
+                # Two-column layout: explanation | details
+                detail_cols = st.columns([3, 2])
+
+                with detail_cols[0]:
+                    # Inline progress bar
                     st.markdown(
                         f"""
-                        <div style="background: linear-gradient(90deg,
-                            #004d00 0%, #00d4ff 50%, #8B0000 100%);
-                            height: 18px; border-radius: 4px; position: relative;">
-                            <div style="position: absolute; top: -4px; left: {ai_p:.1f}%;
-                                        width: 2px; height: 26px; background: #fff;"></div>
+                        <div style="background: {bg_gradient};
+                                    height: 20px; border-radius: 6px;
+                                    position: relative; margin: 12px 0 8px 0;">
+                            <div style="position: absolute; top: -5px; left: {ai_p:.1f}%;
+                                        width: 3px; height: 30px; background: #fff;
+                                        box-shadow: 0 0 8px #fff;"></div>
                         </div>
                         <div style="display: flex; justify-content: space-between;
-                                    font-size: 0.8em; color: #888; margin-top: 2px">
-                            <span>0% REAL</span><span>50%</span><span>100% AI</span>
+                                    font-size: 0.85em; color: #8a94a6; margin-bottom: 12px;">
+                            <span>0% <span style='color:#28a745'>REAL</span></span>
+                            <span><span style='color:#ffc107'>50%</span></span>
+                            <span><span style='color:#dc3545'>100% AI</span></span>
                         </div>
                         """,
                         unsafe_allow_html=True,
                     )
-                    st.markdown(f"**Confidence:** {test.confidence:.0%}")
-                    st.markdown(f"**Verdict:** {test.verdict}")
-                    st.markdown(f"**Explanation:** {_truncate_text(test.explanation, 500)}")
 
-                with cols[1]:
+                    st.markdown(f"**Verdict:** {_badge_html(ai_p)}", unsafe_allow_html=True)
+                    st.markdown(f"**Confidence:** {confidence:.0%}")
+                    st.markdown(
+                        f"**AI Contribution:** {ai_p:.1f}%  |  **Real Contribution:** {real_p:.1f}%"
+                    )
+                    st.markdown(f"**Explanation:** {_truncate(test.explanation, 500)}")
+
+                with detail_cols[1]:
                     if test.details:
-                        detail_lines = []
-                        for key, value in test.details.items():
-                            if isinstance(value, dict):
-                                val_str = json.dumps(value, default=str)[:100]
-                            elif isinstance(value, (list, tuple)):
-                                val_str = ", ".join(str(v) for v in value)[:100]
-                            else:
-                                val_str = str(value)[:100]
-                            detail_lines.append(f"**{key}:** {val_str}")
-                        st.markdown("\n".join(detail_lines))
+                        st.markdown("<b>🔬 Technical Details</b>", unsafe_allow_html=True)
+                        st.markdown(_format_details(test.details), unsafe_allow_html=True)
 
-        # ── Download buttons ───────────────────────────────────────────────
-        st.markdown("---")
-        st.subheader("📥 Download Reports")
+        # ── Download buttons ─────────────────────────────────────────────
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown(
+            "<h3 style='color:#ffffff; margin-bottom:12px;'>📥 Download Reports</h3>",
+            unsafe_allow_html=True,
+        )
 
-        col_html, col_json = st.columns(2)
+        col_dl1, col_dl2 = st.columns(2, gap="medium")
 
-        with col_html:
+        with col_dl1:
             try:
                 html_content = generate_html_report(report, tmp_path)
             except Exception:
@@ -294,73 +1025,42 @@ if uploaded_file is not None:
                 file_name="ai_analysis_report.html",
                 mime="text/html",
                 use_container_width=True,
+                key="dl_html",
             )
 
-        with col_json:
-            json_content = json.dumps(report.to_dict(), indent=2)
+        with col_dl2:
+            json_content = json.dumps(report.to_dict(), indent=2, default=str)
             st.download_button(
                 label="📋 Download JSON Report",
                 data=json_content,
                 file_name="ai_analysis_report.json",
                 mime="application/json",
                 use_container_width=True,
+                key="dl_json",
             )
 
-        # ── Metadata details (optional) ────────────────────────────────────
-        with st.expander("📷 Image Metadata Details", icon="ℹ️"):
-            st.markdown(
-                f"**File:** {report.image_path}\n"
-                f"**Resolution:** {report.image_size[0]} × {report.image_size[1]}\n"
-                f"**File size:** {report.file_size / 1024:.1f} KB\n"
-                f"**Analysis timestamp:** {report.timestamp}"
-            )
+        # ── JSON preview (collapsible) ────────────────────────────────
+        with st.expander("📄 JSON Output Preview", icon="💾"):
+            st.json(json.dumps(report.to_dict(), indent=2, default=str), expanded=False)
 
     except Exception as e:
         st.error(f"An error occurred during analysis: {e}")
         st.exception(e)
 
     finally:
-        # Clean up the temporary file
+        # Clean up temp file
         try:
             os.unlink(tmp_path)
         except OSError:
             pass
 
-else:
-    # ── No file uploaded — show placeholder ──────────────────────────────────
-    st.markdown("---")
-    st.info("📤 **Upload an image to begin analysis.** "
-            "The tool will run six forensic tests and display the results.")
-
-    # Show example / instructions
-    with st.expander("📖 How to use this tool", expanded=True):
-        st.markdown(f"""
-        1. **Upload** an image using the drag-and-drop area above.
-        2. Wait for the **six forensic tests** to complete (usually 1–3 seconds).
-        3. Review the **overall AI probability** and **per-test breakdown**.
-        4. **Download** the HTML or JSON report for offline reference.
-
-        **Supported formats:** `{', '.join(ext.upper() for ext in SUPPORTED_FORMATS)}`
-
-        **Verdict scale:**
-        | AI Probability | Verdict |
-        |----------------|---------|
-        | < 30% | Real Camera Photo |
-        | 30–65% | Uncertain / Mixed Signals |
-        | > 65% | AI-Generated |
-
-        > **Note:** This tool is for educational and research use only.
-        > No automated detector is 100 % reliable. Always use human
-        > judgment when interpreting results. For cryptographically secure
-        > provenance, check C2PA / Content Credentials signatures.
-        """)
-
-
 # ── Footer ────────────────────────────────────────────────────────────────
-st.markdown("---")
+st.markdown("<hr style='border-color: rgba(255,255,255,0.06);'>", unsafe_allow_html=True)
 st.markdown(
-    "<p style='text-align: center; color: #888; font-size: 0.8em'>"
-    "AI Image Analyzer v2.1 · Built for AI safety research · "
-    "Educational use only</p>",
+    """
+    <div class="footer">
+        AI Image Analyzer v3.0 · Built for AI safety research · Educational use only
+    </div>
+    """,
     unsafe_allow_html=True,
 )
