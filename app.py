@@ -52,6 +52,7 @@ try:
     from ai_image_analyzer import (  # noqa: E402
         analyze_image,
         generate_html_report,
+        generate_heatmap,
         AI_THRESHOLD,
         UNCERTAIN_LOW,
     )
@@ -741,10 +742,10 @@ st.markdown(
         <div style="display:flex; align-items:center; gap:14px;">
             <span style="font-size:2.4em;">🔍</span>
             <div>
-                <h1 style="margin:0; color:#ffffff; font-size:2em;">AI Image Analyzer</h1>
-                <p style="margin:4px 0 0 0; color:#8a94a6; font-size:0.95em;">
-                    Forensic analysis of images for AI-generation fingerprints · Eight tests · Real-time results
-                </p>
+                <h1 style="margin:0; color:#00d4ff; font-size:2em;">AI Image Detector</h1>
+                <h2 style="margin:4px 0 0 0; color:#ffffff; font-size:1em; font-weight:400;">
+                    Deep Visual Analysis · Eight forensic tests · Real-time results
+                </h2>
             </div>
         </div>
     </div>
@@ -850,53 +851,57 @@ else:
         with col_badge:
             st.markdown(_badge_html(report.overall_score), unsafe_allow_html=True)
 
-        # ── Top-level KPI cards ─────────────────────────────────────────────
-        col1, col2, col3, col4 = st.columns(4, gap="medium")
+        # ── DeepAI-style neon KPI pill badges ───────────────────────────────
+        # Horizontal pills: AI Likelihood / Confidence Level / Verdict, plus
+        # the raw Vision-Transformer prediction surfaced on the dashboard.
+        dl_test = next(
+            (t for t in report.tests if t.name and t.name.lower().split()[0] == "deep"),
+            None,
+        )
+        dl_raw = dl_test.score if dl_test else None
+        dl_sub = f" · ViT raw: {dl_raw:.1f}% AI" if dl_raw is not None else ""
+        is_ai = report.overall_score >= AI_THRESHOLD
+        verdict_label = _badge_text(report.overall_score)
+        if is_ai:
+            glow, bg = "0 0 12px #ff0055, 0 0 24px #ff0055", "linear-gradient(135deg, #2a0a1a, #4a0a2a)"
+        elif report.overall_score < UNCERTAIN_LOW:
+            glow, bg = "0 0 12px #00e676, 0 0 24px #00e676", "linear-gradient(135deg, #0a2a0a, #0a4a1a)"
+        else:
+            glow, bg = "0 0 12px #ffd600, 0 0 24px #ffd600", "linear-gradient(135deg, #2a220a, #4a3a0a)"
 
-        with col1:
-            st.markdown(
-                f"""
-                <div class="kpi-card" style="border:1px solid rgba(255,255,255,0.06);">
-                    <div style="font-size:1.6em; color:#00d4ff;">{report.overall_score:.1f}%</div>
-                    <div class="kpi-label">AI Probability</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+        resolution = f"{report.image_size[0]}×{report.image_size[1]}" if report.image_size else "—"
+        size_str = f"{report.file_size / 1024:.0f} KB" if report.file_size else "—"
 
-        with col2:
-            st.markdown(
-                f"""
-                <div class="kpi-card" style="border:1px solid rgba(255,255,255,0.06);">
-                    <div style="font-size:1.6em; color:#00c9a7">{100 - report.overall_score:.1f}%</div>
-                    <div class="kpi-label">Real Probability</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-        with col3:
-            st.markdown(
-                f"""
-                <div class="kpi-card" style="border:1px solid rgba(255,255,255,0.06);">
-                    <div style="font-size:1.6em; color:#ff9d00">{report.overall_confidence:.0%}</div>
-                    <div class="kpi-label">Confidence</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-        with col4:
-            resolution = f"{report.image_size[0]}×{report.image_size[1]}" if report.image_size else "—"
-            st.markdown(
-                f"""
-                <div class="kpi-card" style="border:1px solid rgba(255,255,255,0.06);">
-                    <div style="font-size:1.4em; color:#66ccff">{report.file_size / 1024:.0f} KB</div>
-                    <div class="kpi-label">{resolution}</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+        st.markdown(
+            f"""
+            <style>
+              .neon-pill {{ display:inline-block; border-radius:999px; padding:12px 22px;
+                              font-size:1.2em; font-weight:700; color:#ffffff;
+                              border: 1px solid rgba(255,255,255,0.18);
+                              text-shadow: 0 0 6px rgba(0,0,0,0.7); }}
+              .neon-pill .sub {{ font-size:0.5em; opacity:0.78; font-weight:400;
+                                  display:block; margin-top:2px; }}
+              .neon-row {{ display:flex; gap:16px; align-items:center; flex-wrap:wrap;
+                          margin: 4px 0 2px 0; }}
+            </style>
+            <div class="neon-row">
+              <span class="neon-pill" style="box-shadow: {glow}; background: {bg};">
+                {report.overall_score:.1f}%<span class="sub">AI Likelihood{dl_sub}</span>
+              </span>
+              <span class="neon-pill" style="background:linear-gradient(135deg,#2a220a,#4a3a0a);
+                     box-shadow:0 0 12px #ffd600,0 0 24px #ffd600;">
+                {report.overall_confidence:.0%}<span class="sub">Confidence Level</span>
+              </span>
+              <span class="neon-pill" style="box-shadow: {glow}; background: {bg};">
+                {verdict_label}<span class="sub">Verdict Classification</span>
+              </span>
+            </div>
+            <div style="font-size:0.82em; color:#8a94a6; margin-top:4px;">
+              {resolution} · {size_str}
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
         # ── Progress ring + image preview ────────────────────────────────
         st.markdown("<br>", unsafe_allow_html=True)
@@ -916,10 +921,38 @@ else:
             )
 
         with col_image:
-            st.image(
-                tmp_path,
-                caption=f"Uploaded: {uploaded_file.name}",
-                use_container_width=True,
+            import base64 as _b64
+            try:
+                with open(tmp_path, "rb") as _f:
+                    _b64img = _b64.b64encode(_f.read()).decode("ascii")
+            except Exception:
+                _b64img = ""
+            _ext = uploaded_file.name.rsplit(".", 1)[-1].lower() if "." in uploaded_file.name else "png"
+            _mime = {
+                "jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
+                "bmp": "image/bmp", "webp": "image/webp", "gif": "image/gif",
+                "tiff": "image/tiff",
+            }.get(_ext, "image/png")
+            _pct = report.overall_score
+            _word = "FAKE" if _pct >= AI_THRESHOLD else (
+                "UNCERTAIN" if _pct > UNCERTAIN_LOW else "REAL"
+            )
+            _gcolor = "#00e676" if _pct < UNCERTAIN_LOW else "#ff0055"
+            st.markdown(
+                f"""
+                <div style="position:relative; display:inline-block; width:100%;">
+                  <img src="data:{_mime};base64,{_b64img}" style="width:100%;
+                    border-radius:14px; display:block;" alt="Uploaded image"/>
+                  <div style="position:absolute; bottom:14px; right:14px; z-index:2;
+                    background:{_gcolor}; color:#ffffff; font-size:0.88em;
+                    font-weight:700; padding:7px 16px; border-radius:999px;
+                    box-shadow:0 0 10px {_gcolor}, 0 0 22px {_gcolor};
+                    border:1px solid rgba(255,255,255,0.25);">
+                    {_pct:.0f}% {_word}
+                  </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
             )
 
         with col_verdict:
@@ -945,6 +978,37 @@ else:
                 """,
                 unsafe_allow_html=True,
             )
+
+        # ── AI DETECTION HEATMAP overlay ───────────────────────────────────
+        st.markdown("<br>", unsafe_allow_html=True)
+        show_heatmap = st.toggle(
+            "🔥 AI DETECTION HEATMAP",
+            value=False,
+            help="Overlay an ELA-based heatmap (red/yellow = strongest generative artefacts).",
+        )
+        if show_heatmap:
+            try:
+                import numpy as _np
+                import cv2 as _cv2
+                _hm = generate_heatmap(tmp_path)            # BGR uint8 (ELA-derived)
+                _orig = _cv2.imread(tmp_path)               # BGR uint8
+                if _orig is None:
+                    raise ValueError("could not decode preview image")
+                if _hm.shape[:2] == _orig.shape[:2]:
+                    _blend = _cv2.addWeighted(_hm, 0.38, _orig, 0.62, 0)
+                else:
+                    _blend = _hm
+                _ok, _arr = _cv2.imencode(".png", _blend)
+                if not _ok:
+                    raise ValueError("heatmap encode failed")
+                _buf = io.BytesIO(_arr.tobytes())
+                st.image(
+                    _buf,
+                    caption="Heatmap overlay (red/yellow = generative artefacts)",
+                    use_container_width=True,
+                )
+            except Exception as _e:
+                st.warning(f"Could not generate heatmap: {_e}")
 
         # ── Summary ────────────────────────────────────────────────────────
         st.markdown("<br>", unsafe_allow_html=True)

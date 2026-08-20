@@ -149,6 +149,41 @@ DYNAMIC_WEIGHTS_NO_EXIF = {
     "error":         1.20,   # boosted — ELA is a strong physical signal
 }
 
+# ─────────────────────────────────────────────────────────────────────────
+# DeepAI-style Deep-Learning-PRIMARY upgrade (v3.2)
+# ─────────────────────────────────────────────────────────────────────────
+# On NON-PHOTOGRAPHIC / synthetic / diagrammatic inputs (detected as no-EXIF),
+# the Vision Transformer ('umm-maybe/AI-image-detector') is the PRIMARY
+# classifier and dominates the decision matrix (DL_PRIMARY_WEIGHT = 0.85).
+# The heuristic forensic tests are demoted to a 15% residual weight so the
+# net's raw probability drives the verdict — matching DeepAI's model-led
+# scoring.  A confidence gate (DL_CONFIDENCE_GATE) prevents a wrong or
+# unconfident net prediction (e.g. the transformer scoring a synthetic image
+# as mostly-human) from drowning out the forensic ensemble, which keeps a
+# real AI-generated image from being flipped to "Real".
+DL_PRIMARY_WEIGHT = 0.85              # DL weight for non-photographic inputs
+DL_FORCE_AI_THRESHOLD = 85.0          # DL AI-prob above this -> force "AI-Generated / Fake"
+DL_CONFIDENCE_GATE = 0.85             # min DL confidence to treat the net as primary
+SIGMOID_STEEPNESS_BASE = 0.08         # base sigmoid steepness (photographic inputs)
+SIGMOID_STEEPNESS_DECISIVE = 0.13     # sharper sigmoid for non-photographic inputs
+                                        # (pushes confident signals to >90% / <10%)
+
+# Weight profile used when the DL model is the primary classifier on a
+# non-photographic / synthetic / diagrammatic input.  DL = 85%, the residual
+# 15% is split across the (demoted) forensic tests with the spatial
+# noise / frequency tests weighted down as requested.
+DL_DOMINANT_WEIGHTS = {
+    "metadata":      0.02,
+    "c2pa":          0.02,
+    "noise":         0.06,   # reduced — DL is the primary signal now
+    "frequency":     0.04,   # reduced
+    "statistical":   0.03,
+    "visual":        0.05,
+    "deep":          0.85,
+    "error":         0.02,
+}
+# Total = 0.02+0.02+0.06+0.04+0.03+0.05+0.85+0.02 = 1.00
+
 # Verdict thresholds (v3.0 — recalibrated, tighter than v2.0)
 AI_THRESHOLD  = 55.0   # above this --> AI-Generated
 UNCERTAIN_LOW = 20.0   # below this --> Real Camera Photo
@@ -1371,6 +1406,35 @@ def test_error_level_analysis(cv_img: np.ndarray) -> TestResult:
     )
 
 
+def generate_heatmap(image_path: str, quality: int = 95) -> np.ndarray:
+    """Generate an AI-detection heatmap (ELA-based) for visualisation.
+
+    Re-encodes the image at ``quality`` JPEG quality, computes the absolute
+    recompression (ELA) error map and colourises it with OpenCV's JET
+    colormap so that regions with the strongest compression / generative
+    artefacts glow red/yellow.  Returns a BGR ``uint8`` array (same spatial
+    size as the input) suitable for ``cv2.addWeighted`` blending or direct
+    display.
+
+    This powers the 'AI DETECTION HEATMAP' overlay toggle in the Streamlit
+    UI and any ELA-based diagnostic rendering.
+    """
+    raw = cv2.imread(image_path, cv2.IMREAD_COLOR)
+    if raw is None:
+        return np.zeros((1, 1, 3), dtype=np.uint8)
+    cv_img = cv2.cvtColor(raw, cv2.COLOR_BGR2RGB)
+    ela_img, _ela_std = _run_ela(cv_img, quality=quality)
+    if ela_img.dtype != "uint8":
+        ela_img = np.clip(ela_img, 0, 255).astype(np.uint8)
+    ela_gray = cv2.cvtColor(ela_img, cv2.COLOR_RGB2GRAY)
+    g = ela_gray.astype(np.float32)
+    g_min, g_max = float(g.min()), float(g.max())
+    g_norm = (g - g_min) / (g_max - g_min + 1e-8) * 255.0
+    g_8u = g_norm.astype(np.uint8)
+    heatmap = cv2.applyColorMap(g_8u, cv2.COLORMAP_JET)  # BGR uint8
+    return heatmap
+
+
 # ════════════════════════════════════════════════════════════════════════════
 #  Test 3 — Frequency Domain Analysis (Enhanced 2D FFT)
 # ════════════════════════════════════════════════════════════════════════════
@@ -1954,24 +2018,37 @@ def aggregate_results(
       4. **Sigmoid scaling** — final non-linear transform for stronger
          verdict confidence (extreme signals → closer to 0 / 100).
     """
-    # ── 1. Dynamic weight adjustment ───────────────────────────────────
-    if not has_exif:
-        # Boost physical signal tests, reduce metadata tests
-        weight_multipliers = DYNAMIC_WEIGHTS_NO_EXIF
+    # ── 1. Select the weighting profile (DeepAI-style, model-led scoring) ──
+    # Non-photographic / synthetic / diagrammatic inputs carry no EXIF, so the
+    # Vision Transformer ('umm-maybe/AI-image-detector') acts as the PRIMARY
+    # classifier and dominates the decision matrix (DL = 85%).  A confidence
+    # gate keeps the forensic ensemble in charge when the net is uncertain or
+    # confidently wrong, so a mis-predicting transformer cannot flip a real
+    # AI-generated image to "Real".
+    non_photographic = not has_exif
+    dl_test = next((t for t in tests if t.name.lower().split()[0] == "deep"), None)
+    dl_confident = dl_test is not None and dl_test.confidence >= DL_CONFIDENCE_GATE
+    if non_photographic and dl_confident:
+        # DL is confident on a non-photographic input -> model-led decision.
+        weight_profile = dict(DL_DOMINANT_WEIGHTS)
+    elif non_photographic:
+        # No EXIF but the net is unsure -> forensic ensemble (boosted signals).
+        weight_profile = {
+            k: TEST_WEIGHTS.get(k, 0.2) * DYNAMIC_WEIGHTS_NO_EXIF.get(k, 1.0)
+            for k in TEST_WEIGHTS
+        }
     else:
-        weight_multipliers = {k: 1.0 for k in TEST_WEIGHTS}
+        # Photographic input with EXIF -> base weights (unchanged behaviour).
+        weight_profile = dict(TEST_WEIGHTS)
 
-    # ── 2. Per-test score expansion ──────────────────────────────────────
+    # ── 2. Per-test score expansion & confidence-weighted aggregation ────
     weighted_sum = 0.0
     weight_total = 0.0
     confidence_values: list[float] = []
 
     for test in tests:
         key = test.name.lower().split()[0]
-        base_weight = TEST_WEIGHTS.get(key, 0.2)
-        multiplier = weight_multipliers.get(key, 1.0)
-        weight = base_weight * multiplier
-
+        weight = weight_profile.get(key, 0.2)
         expanded_score = _expand_test_score(test.score, test.confidence)
         weighted_sum += expanded_score * weight * test.confidence
         weight_total += weight * test.confidence
@@ -1980,10 +2057,15 @@ def aggregate_results(
     raw_score = weighted_sum / (weight_total + 1e-12) if weight_total > 0 else 50.0
     overall_confidence = float(np.mean(confidence_values))
 
-    # ── 3 & 4. Non-linear sigmoid scaling on the aggregated score ──────
-    overall_score = _sigmoid_scale(raw_score)
+    # ── 3 & 4. Sigmoid / temperature scaling on the aggregated score ────
+    # A sharper sigmoid for non-photographic inputs pushes confident signals
+    # toward decisive >90% / <10% values instead of the ~50% neutral zone.
+    steepness = (
+        SIGMOID_STEEPNESS_DECISIVE if non_photographic else SIGMOID_STEEPNESS_BASE
+    )
+    overall_score = _sigmoid_scale(raw_score, steepness=steepness)
 
-    # ── Verdict ────────────────────────────────────────────────────────
+    # ── Verdict (from the aggregated score) ──────────────────────────────
     if overall_score < UNCERTAIN_LOW:
         verdict = "Real Camera Photo"
     elif overall_score <= AI_THRESHOLD:
@@ -1991,17 +2073,37 @@ def aggregate_results(
     else:
         verdict = "AI-Generated"
 
+    # ── Deep-Learning force-AI override ─────────────────────────────────
+    # When the Vision Transformer is >85% sure an image is AI/synthetic, trust
+    # the net: force the verdict and refuse to let neutral forensic scores
+    # average a confident-AI prediction back down toward 50%.
+    dl_force_applied = False
+    if dl_test is not None and dl_test.score > DL_FORCE_AI_THRESHOLD:
+        verdict = "AI-Generated / Fake"
+        overall_score = max(overall_score, dl_test.score)
+        dl_force_applied = True
+
     ai_tests = [t for t in tests if t.score > 50.0]
     real_tests = [t for t in tests if t.score < 50.0]
 
     parts = [
         f"AI Probability: {overall_score:.0f}% (Real: {100 - overall_score:.0f}%) (conf: {overall_confidence:.0%})",
     ]
+    if non_photographic and dl_test is not None:
+        parts.append(
+            f"DL primary classifier (ViT {dl_test.score:.0f}% AI, "
+            f"conf {dl_test.confidence:.0%}, "
+            f"{'weight=85%' if dl_confident else 'ensemble backstop'})"
+        )
     if ai_tests:
         parts.append(f"AI indicators from: {', '.join(t.name for t in ai_tests)}")
     if real_tests:
         parts.append(f"Real-photo indicators from: {', '.join(t.name for t in real_tests)}")
     parts.append(f"Verdict: {verdict}")
+    if dl_force_applied:
+        parts.append(
+            "DL force-AI: ViT >85% confident -> verdict forced to AI-Generated / Fake"
+        )
 
     summary = " | ".join(parts)
 
@@ -2144,6 +2246,20 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 """
 
 
+def _verdict_css_class(verdict: str) -> str:
+    """Map a (possibly compound) verdict string to the HTML_TEMPLATE CSS class.
+
+    Introduced when the Deep-Learning force-AI rule can emit
+    'AI-Generated / Fake'; the CSS selectors are written for the base verdict
+    names, so we normalise here.
+    """
+    if verdict.startswith("AI-Generated"):
+        return "AI-Generated"
+    if verdict.startswith("Real"):
+        return "Real Camera Photo"
+    return "Uncertain / Mixed Signals"
+
+
 def generate_html_report(report: AnalysisReport, image_path: str) -> str:
     """Generate an interactive HTML report for a single image."""
     score = report.overall_score
@@ -2188,7 +2304,7 @@ def generate_html_report(report: AnalysisReport, image_path: str) -> str:
         height=report.image_size[1],
         file_size=human_readable_size(report.file_size),
         timestamp=report.timestamp,
-        verdict_class=report.verdict.replace(" ", "\\ "),
+        verdict_class=_verdict_css_class(report.verdict),
         verdict_text=report.verdict,
         score_percent=score_percent,
         ai_prob=score,
@@ -2206,9 +2322,9 @@ def _generate_batch_html(output_path: str, reports: list[AnalysisReport]) -> Non
     from datetime import datetime as dt
 
     total = len(reports)
-    ai_count = sum(1 for r in reports if r.verdict == "AI-Generated")
-    uncertain_count = sum(1 for r in reports if r.verdict == "Uncertain / Mixed Signals")
-    real_count = sum(1 for r in reports if r.verdict == "Real Camera Photo")
+    ai_count = sum(1 for r in reports if r.verdict.startswith("AI-Generated"))
+    uncertain_count = sum(1 for r in reports if r.verdict.startswith("Uncertain"))
+    real_count = sum(1 for r in reports if r.verdict.startswith("Real"))
 
     sections = []
     for i, report in enumerate(reports, 1):
