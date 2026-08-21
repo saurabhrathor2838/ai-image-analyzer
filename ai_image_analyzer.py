@@ -75,17 +75,20 @@ from PIL import Image, ExifTags
 
 # ── Optional deep-learning imports (Swin Transformer AI detector) ─────────
 _TORCH_AVAILABLE = True
+_DL_MODEL = None
+_DL_PROCESSOR = None
+# Primary + fallback HuggingFace detector models. The primary
+# 'umm-maybe/AI-image-detector' is a Swin Transformer that classifies
+# images as 'artificial' (AI) vs 'human' (real photo). 'Organika/sdxl-detector'
+# is tried as a fallback so the deep signal never silently collapses to a
+# neutral 50.0% on a single-model load failure.
+_DL_MODEL_NAMES = ["umm-maybe/AI-image-detector", "Organika/sdxl-detector"]
+_MODEL_NAME = _DL_MODEL_NAMES[0]  # primary model (display / fallback sentinel)
 try:
     import torch
     from transformers import AutoModelForImageClassification, AutoImageProcessor
-    _DL_MODEL = None
-    _DL_PROCESSOR = None
-    _MODEL_NAME = "umm-maybe/AI-image-detector"
 except ImportError:
     _TORCH_AVAILABLE = False
-    _DL_MODEL = None
-    _DL_PROCESSOR = None
-    _MODEL_NAME = "umm-maybe/AI-image-detector"
 
 # ── Suppress noisy warnings ──────────────────────────────────────────────
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -116,6 +119,19 @@ C2PA_AI_KEYWORDS = [
     "this image was generated", "ai art", "ai artwork",
     "deep learning", "neural network", "gan",
 ]
+
+# Strong generative-AI watermark signatures embedded by model vendors
+# (DALL-E 3, ChatGPT, Adobe Firefly/Generate).  C2PA *provenance* alone is
+# neutral, but one of these generation-tool signatures is definitive proof
+# of AI generation -> the C2PA test immediately assigns a 98%+ AI score.
+DALLE3_WATERMARK_SIGNS = (
+    "dall·e", "dall-e", "dalle-3", "dalle 3", "dalle3",
+    "chatgpt", "chat gpt", "chat-gpt",
+    "adobe firefly", "firefly",
+    "com.adobe.generate", "com.adobe.generative",
+    "generate (beta)",
+    "software: adobe", "software: generative",
+)
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".gif", ".tiff", ".tif"}
 
@@ -164,6 +180,7 @@ DYNAMIC_WEIGHTS_NO_EXIF = {
 DL_PRIMARY_WEIGHT = 0.85              # DL weight for non-photographic inputs
 DL_FORCE_AI_THRESHOLD = 85.0          # DL AI-prob above this -> force "AI-Generated / Fake"
 DL_CONFIDENCE_GATE = 0.85             # min DL confidence to treat the net as primary
+DL_LEANS_REAL_THRESHOLD = 30.0        # DL AI-prob below this -> "leans real"
 SIGMOID_STEEPNESS_BASE = 0.08         # base sigmoid steepness (photographic inputs)
 SIGMOID_STEEPNESS_DECISIVE = 0.13     # sharper sigmoid for non-photographic inputs
                                         # (pushes confident signals to >90% / <10%)
@@ -623,6 +640,7 @@ def test_c2pa_exif(image_path: str, pil_img: Image.Image, exif_dict: dict[int, A
 
     # --- XMP extraction and analysis ---
     xmp_text = ""
+    xmp_lower = ""
     if raw_data:
         xmp_text = _extract_xmp(raw_data)
 
@@ -675,6 +693,33 @@ def test_c2pa_exif(image_path: str, pil_img: Image.Image, exif_dict: dict[int, A
         )
         ai_prob = min(95.0, ai_prob + 25.0)
         confidence = max(confidence, 0.75)
+
+    # --- DALL-E 3 / ChatGPT / Firefly watermark detection ---
+    # Vendor-embedded generation signatures (DALL-E 3, ChatGPT, Adobe
+    # Firefly/Generate).  Finding one is definitive proof of AI generation,
+    # so the test jumps to a 98%+ AI score instead of a gradual bump.
+    watermark_hits: list[str] = []
+    for sign in DALLE3_WATERMARK_SIGNS:
+        sign_b = sign.encode("utf-8")
+        if (sign_b in raw_lower) or (sign in xmp_lower):
+            watermark_hits.append(sign)
+    # 'prompt' generation field — DALL-E 3 / ChatGPT embed a 'prompt' XMP or
+    # EXIF tag.  A bare 'prompt' only counts when no real camera make/model
+    # is present (avoids false positives on genuine photographs).
+    has_camera_exif = bool(exif_dict.get(271) or exif_dict.get(272))
+    if not has_camera_exif:
+        if ('"prompt"' in xmp_lower or "prompt:" in xmp_lower
+                or "prompt=" in xmp_lower or b"prompt:" in raw_lower):
+            if not watermark_hits:
+                watermark_hits.append("prompt")
+    if watermark_hits:
+        findings.append(
+            "AI generation watermark detected in metadata: "
+            + ", ".join(watermark_hits[:5])
+        )
+        ai_prob = max(ai_prob, 98.0)
+        confidence = max(confidence, 0.98)
+        details["dalle3_watermark"] = watermark_hits[:10]
 
     # --- Adobe Photoshop IRB / APP13 check ---
     adobe_segments = {k: v for k, v in _parse_jpeg_segments(raw_data).items() if k == "APP13"}
@@ -1056,26 +1101,35 @@ def _load_dl_model() -> Any:
     if not _TORCH_AVAILABLE:
         return None
 
-    cache_key = _MODEL_NAME
-    if cache_key in _DL_MODEL_CACHE:
-        return _DL_MODEL_CACHE[cache_key]
+    # Try each candidate model in order; cache per-model so a model that
+    # previously failed is not retried and a working model is reused. The
+    # deep-learning signal only degrades to the neutral 50.0% sentinel when
+    # *every* candidate fails to load.
+    for name in _DL_MODEL_NAMES:
+        cached = _DL_MODEL_CACHE.get(name)
+        if cached is False:
+            continue            # previously tried and failed — skip
+        if cached is not None:
+            return cached       # (model, processor)
 
-    try:
-        import torch
-        from transformers import AutoModelForImageClassification, AutoImageProcessor
+        try:
+            import torch
+            from transformers import AutoModelForImageClassification, AutoImageProcessor
 
-        processor = AutoImageProcessor.from_pretrained(_MODEL_NAME)
-        model = AutoModelForImageClassification.from_pretrained(_MODEL_NAME)
-        model.eval()
-        if torch.cuda.is_available():
-            model = model.to("cuda")
+            processor = AutoImageProcessor.from_pretrained(name)
+            model = AutoModelForImageClassification.from_pretrained(name)
+            model.eval()
+            if torch.cuda.is_available():
+                model = model.to("cuda")
 
-        _DL_MODEL_CACHE[cache_key] = (model, processor)
-        return _DL_MODEL_CACHE[cache_key]
-    except Exception as exc:
-        warnings.warn(f"Deep learning model load failed: {exc}")
-        _DL_MODEL_CACHE[cache_key] = None
-        return None
+            _DL_MODEL_CACHE[name] = (model, processor)
+            return _DL_MODEL_CACHE[name]
+        except Exception as exc:
+            warnings.warn(f"Deep learning model '{name}' load failed: {exc}")
+            _DL_MODEL_CACHE[name] = False
+            continue
+
+    return None
 
 
 def test_deep_learning(cv_img: np.ndarray) -> TestResult:
@@ -2028,11 +2082,35 @@ def aggregate_results(
     non_photographic = not has_exif
     dl_test = next((t for t in tests if t.name.lower().split()[0] == "deep"), None)
     dl_confident = dl_test is not None and dl_test.confidence >= DL_CONFIDENCE_GATE
+    dl_leans_real = dl_test is not None and dl_test.score < DL_LEANS_REAL_THRESHOLD
+
+    # Forensic consensus among the physical-signal tests (noise, frequency,
+    # statistical, visual, error).  This distinguishes a real photo whose EXIF
+    # was stripped by social media / Instagram (forensics agree "real") from an
+    # AI image the net mislabels as "real" (forensics say "AI").
+    _physical_keys = ("noise", "frequency", "statistical", "visual", "error")
+    _phys = [t for t in tests if t.name.lower().split()[0] in _physical_keys]
+    _f_sum = 0.0
+    _f_w = 0.0
+    for _t in _phys:
+        _e = _expand_test_score(_t.score, _t.confidence)
+        _f_sum += _e * _t.confidence
+        _f_w += _t.confidence
+    forensic_consensus = (_f_sum / _f_w) if _f_w > 0 else 50.0
+    forensics_lean_real = forensic_consensus < UNCERTAIN_LOW
+
     if non_photographic and dl_confident:
         # DL is confident on a non-photographic input -> model-led decision.
         weight_profile = dict(DL_DOMINANT_WEIGHTS)
+    elif non_photographic and dl_leans_real and forensics_lean_real:
+        # DL + physical forensics both say "real" on a no-EXIF image -> this is
+        # a real photo whose EXIF was stripped by social media / Instagram
+        # (re-encode, filter).  Do NOT apply the missing-EXIF signal boost; it
+        # would amplify filter artefacts into a false AI positive.  Use base
+        # weights so the photo is not penalised for stripped metadata.
+        weight_profile = dict(TEST_WEIGHTS)
     elif non_photographic:
-        # No EXIF but the net is unsure -> forensic ensemble (boosted signals).
+        # No EXIF and signals are ambiguous -> forensic ensemble (boosted).
         weight_profile = {
             k: TEST_WEIGHTS.get(k, 0.2) * DYNAMIC_WEIGHTS_NO_EXIF.get(k, 1.0)
             for k in TEST_WEIGHTS
@@ -2090,10 +2168,15 @@ def aggregate_results(
         f"AI Probability: {overall_score:.0f}% (Real: {100 - overall_score:.0f}%) (conf: {overall_confidence:.0%})",
     ]
     if non_photographic and dl_test is not None:
+        if dl_confident:
+            _dl_mode = "weight=85%"
+        elif dl_leans_real and forensics_lean_real:
+            _dl_mode = "real photo, EXIF stripped (base weights)"
+        else:
+            _dl_mode = "ensemble backstop"
         parts.append(
             f"DL primary classifier (ViT {dl_test.score:.0f}% AI, "
-            f"conf {dl_test.confidence:.0%}, "
-            f"{'weight=85%' if dl_confident else 'ensemble backstop'})"
+            f"conf {dl_test.confidence:.0%}, {_dl_mode})"
         )
     if ai_tests:
         parts.append(f"AI indicators from: {', '.join(t.name for t in ai_tests)}")

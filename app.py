@@ -79,7 +79,10 @@ SUPPORTED_FORMATS = ["jpg", "jpeg", "png", "bmp", "webp", "gif", "tiff", "tif"]
 st.markdown(
     """
     <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+    /* 'Inter' falls back to the system font stack defined in `html, body`
+       below.  The previous `@import url(...)` pointing at Google Fonts is
+       removed because it raised a 404 in network-restricted environments
+       (and Streamlit blocks cross-origin fetches from static HTML anyway). */
 
     /* ── Global resets & theme ────────────────────────────── */
     html, body, .main, .stSidebar, .stApp {
